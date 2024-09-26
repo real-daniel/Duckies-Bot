@@ -8,6 +8,8 @@ import asyncio
 import random
 import json
 from fragchart import fragchart
+import mysql.connector
+from mysql.connector import errorcode
 
 NewIntents = discord.Intents.default()
 NewIntents.message_content = True
@@ -17,9 +19,31 @@ NewIntents.reactions = True
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
+SQLUSER = os.getenv('SQL_USER')
+SQLPASS = os.getenv('SQL_PASS')
+SQLDATABASE = os.getenv("SQL_DATABASE")
+SQLHOST = os.getenv('SQL_HOST')
 
 client = discord.Client(intents=NewIntents)
 bot = commands.Bot(command_prefix="--", intents=NewIntents)
+
+#SQL Database Cursor
+
+try:
+    cnx = mysql.connector.connect(user=SQLUSER, password=SQLPASS,
+                                  host=SQLHOST,
+                                  collation='utf8mb4_unicode_ci',
+                                  database=SQLDATABASE)
+    print("Connected to Database.")
+except mysql.connector.Error as err:
+    if err.errno == errorcode.ER_ACCESS_DENIED_ERROR:
+        print("Something is wrong with your user name or password")
+    elif err.errno == errorcode.ER_BAD_DB_ERROR:
+        print("Database does not exist")
+    else:
+        print(err)
+else:
+    cnx.close()
 
 
 def load_data():
@@ -101,6 +125,25 @@ async def fragregister(interaction: discord.Interaction, userclass: str):
 
         await interaction.response.send_message(
             f"{interaction.user.name} is already a registered user. Please use /fragupdate to update your info!")
+
+    #Create the cursor object to be able to execute commands in the SQL Database.
+    cursor = cnx.cursor()
+    #Get the user data from the database
+    cursor.execute(f"SELECT * FROM `users` WHERE discordID = '{interaction.user.id}'")
+
+    #Confirm the user exists and add him if he does not.
+    if cursor.rowcount == 0:
+        user_to_add = f"INSERT INTO `users`(`discordID`, `class`) VALUES ('{interaction.user.id}','{userclass}')"
+        cursor.execute(user_to_add)
+        cnx.commit()
+        await interaction.response.send_message(
+            f"{interaction.user.name} has successfully registered as a(n) {userclass}!")
+    else:
+        await interaction.response.send_message(
+            f"{interaction.user.name} is already a registered user. Please use /fragupdate to update your info!")
+
+
+
 
 
 # updates current user's fragcount
