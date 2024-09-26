@@ -7,7 +7,7 @@ import requests
 import asyncio
 import random
 import json
-from fraginfo import fraginfo
+from fragchart import fragchart
 
 NewIntents = discord.Intents.default()
 NewIntents.message_content = True
@@ -38,7 +38,20 @@ def load_data():
 
 # initialize fragdata
 fragdata = load_data()
-print(fragdata)
+
+
+#calc frags
+def fragcalc(skill, level):
+    currentSkill = fragchart[skill]
+    fragSpent = 0
+    fragTotal = 0
+    start = 1 if skill == "origin" else 0
+    end = level
+    for i in range (start, end):
+        fragSpent += currentSkill[i][1]
+    for i in range (start, 30):
+        fragTotal += currentSkill[i][1]
+    return [fragSpent, fragTotal]
 
 
 @bot.event
@@ -117,14 +130,14 @@ async def fraginfo(interaction: discord.Interaction):
         title=f"User Info - {interaction.user.name}",
         description=f"""
         Class: {user_data["class"]}\n
-        Origin: {user_data["origin"]}\n
-        Enhance 1: {user_data["enhance1"]}\n
-        Enhance 2: {user_data["enhance2"]}\n
-        Enhance 3: {user_data["enhance3"]}\n
-        Enhance 4: {user_data["enhance4"]}\n
-        Boost 1: {user_data["boost1"]}\n
-        Boost 2: {user_data["boost2"]}\n
-        Common: {user_data["common"]}\n
+        Origin: {user_data["origin"]} | Frags Spent: {fragcalc("origin", user_data["origin"])[0]}\n
+        Enhance 1: {user_data["enhance1"] } | Frags Spent: {fragcalc("enhance", user_data["enhance1"])[0]}\n
+        Enhance 2: {user_data["enhance2"]}  | Frags Spent: {fragcalc("enhance", user_data["enhance2"])[0]}\n
+        Enhance 3: {user_data["enhance3"]} | Frags Spent: {fragcalc("enhance", user_data["enhance3"])[0]}\n
+        Enhance 4: {user_data["enhance4"]} | Frags Spent: {fragcalc("enhance", user_data["enhance4"])[0]}\n
+        Boost 1: {user_data["boost1"]} | Frags Spent: {fragcalc("boost", user_data["boost1"])[0]}\n
+        Boost 2: {user_data["boost2"]} | Frags Spent: {fragcalc("boost", user_data["boost2"])[0]}\n
+        Common: {user_data["common"]} | Frags Spent: {fragcalc("common", user_data["common"])[0]}\n
 """
     )
     await interaction.response.send_message(embed=embed)

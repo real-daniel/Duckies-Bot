@@ -1,4 +1,4 @@
-fraginfo = {"origin": {
+fragchart = {"origin": {
     0: [5, 100],
     1: [1, 30],
     2: [1, 35],
