@@ -30,6 +30,7 @@ bot = commands.Bot(command_prefix="--", intents=NewIntents)
 #SQL Database Cursor
 
 try:
+    print(f"SQL USER: {SQLUSER}, SQLPASS: {SQLPASS}, SQLDATABASE: {SQLDATABASE}, SQLHOST: {SQLHOST}")
     cnx = mysql.connector.connect(user=SQLUSER, password=SQLPASS,
                                   host=SQLHOST,
                                   collation='utf8mb4_unicode_ci',
