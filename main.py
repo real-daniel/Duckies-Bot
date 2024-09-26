@@ -125,19 +125,30 @@ async def fragupdate(interaction: discord.Interaction, origin: int, enhance1: in
 @bot.tree.command(name="fraginfo", description="Show user info")
 async def fraginfo(interaction: discord.Interaction):
     user_data = fragdata[str(interaction.user.id)]
+    fragdatalist = [
+        fragcalc("origin", user_data["origin"])[0],
+        fragcalc("enhance", user_data["enhance1"])[0],
+        fragcalc("enhance", user_data["enhance2"])[0],
+        fragcalc("enhance", user_data["enhance3"])[0],
+        fragcalc("enhance", user_data["enhance4"])[0],
+        fragcalc("boost", user_data["boost1"])[0],
+        fragcalc("boost", user_data["boost2"])[0],
+        fragcalc("common", user_data["common"])[0]
+    ]
     embed = discord.Embed(
         colour=discord.Colour.dark_teal(),
         title=f"User Info - {interaction.user.name}",
         description=f"""
         Class: {user_data["class"]}\n
-        Origin: {user_data["origin"]} | Frags Spent: {fragcalc("origin", user_data["origin"])[0]}\n
-        Enhance 1: {user_data["enhance1"] } | Frags Spent: {fragcalc("enhance", user_data["enhance1"])[0]}\n
-        Enhance 2: {user_data["enhance2"]}  | Frags Spent: {fragcalc("enhance", user_data["enhance2"])[0]}\n
-        Enhance 3: {user_data["enhance3"]} | Frags Spent: {fragcalc("enhance", user_data["enhance3"])[0]}\n
-        Enhance 4: {user_data["enhance4"]} | Frags Spent: {fragcalc("enhance", user_data["enhance4"])[0]}\n
-        Boost 1: {user_data["boost1"]} | Frags Spent: {fragcalc("boost", user_data["boost1"])[0]}\n
-        Boost 2: {user_data["boost2"]} | Frags Spent: {fragcalc("boost", user_data["boost2"])[0]}\n
-        Common: {user_data["common"]} | Frags Spent: {fragcalc("common", user_data["common"])[0]}\n
+        Origin: {user_data["origin"]} | Frags Spent: {fragdatalist[0]}\n
+        Enhance 1: {user_data["enhance1"] } | Frags Spent: {fragdatalist[1]}\n
+        Enhance 2: {user_data["enhance2"]}  | Frags Spent: {fragdatalist[2]}\n
+        Enhance 3: {user_data["enhance3"]} | Frags Spent: {fragdatalist[3]}\n
+        Enhance 4: {user_data["enhance4"]} | Frags Spent: {fragdatalist[4]}\n
+        Boost 1: {user_data["boost1"]} | Frags Spent: {fragdatalist[5]}\n
+        Boost 2: {user_data["boost2"]} | Frags Spent: {fragdatalist[6]}\n
+        Common: {user_data["common"]} | Frags Spent: {fragdatalist[7]}\n
+        Total Frags Spent: {sum(fragdatalist)}
 """
     )
     await interaction.response.send_message(embed=embed)
