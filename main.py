@@ -147,32 +147,19 @@ async def fragregister(interaction: discord.Interaction, userclass: str):
         cnx.close()
 
 
-
-
-
-
-
-
-
-
-
 # updates current user's fragcount
 @bot.tree.command(name="fragupdate", description="Update your frag count")
-async def fragupdate(interaction: discord.Interaction, origin: int, enhance1: int, enhance2: int, enhance3: int,
-                     enhance4: int, boost1: int, boost2: int, common: int):
+async def fragupdate(interaction: discord.Interaction, origin: int = None, enhance1: int = None, enhance2: int = None,
+                     enhance3: int = None, enhance4: int = None, boost1: int = None, boost2: int = None,
+                     common: int = None):
     user_data = fragdata[str(interaction.user.id)]
-    tomCheck = [origin, enhance1, enhance2, enhance3, enhance4, boost1, boost2, common]
-    for i in tomCheck:
-        if i > 30:
+    skillList = [origin, enhance1, enhance2, enhance3, enhance4, boost1, boost2, common]
+    skillList_names = ["origin", "enhance1", "enhance2", "enhance3", "enhance4", "boost1", "boost2", "common"]
+    for i in len(skillList):
+        if skillList[i] > 30:
             await interaction.response.send_message(f"Fuck you Tom")
-    user_data["origin"] = origin
-    user_data["enhance1"] = enhance1
-    user_data["enhance2"] = enhance2
-    user_data["enhance3"] = enhance3
-    user_data["enhance4"] = enhance4
-    user_data["boost1"] = boost1
-    user_data["boost2"] = boost2
-    user_data["common"] = common
+        elif skillList[i] is not None:
+            userdata[skillList_names] = skill
     with open("data.json", "w") as json_file:
         json.dump(fragdata, json_file, indent=4)
     await interaction.response.send_message(f"{interaction.user.name} has successfully updated.")
