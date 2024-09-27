@@ -122,13 +122,14 @@ async def fragregister(interaction: discord.Interaction, userclass: str):
         print("Connected to Database.")
 
         # Create the cursor object to be able to execute commands in the SQL Database.
-        cursor = cnx.cursor()
+        cursor = cnx.cursor(buffered=True)
         # Get the user data from the database
         cursor.execute(f"SELECT * FROM `users` WHERE discordID = '{interaction.user.id}'")
         print(cursor.rowcount)
 
         # Confirm the user exists and add him if he does not.
         if cursor.rowcount == 0:
+            cursor.reset()
             user_to_add = f"INSERT INTO `users`(`discordID`, `class`) VALUES ('{interaction.user.id}','{userclass}')"
             print(user_to_add)
             print(interaction.user.id)
