@@ -149,9 +149,15 @@ async def fragregister(interaction: discord.Interaction, userclass: str):
 
 # updates current user's fragcount
 @bot.tree.command(name="fragupdate", description="Update your frag count")
-async def fragupdate(interaction: discord.Interaction, origin: int = None, enhance1: int = None, enhance2: int = None,
-                     enhance3: int = None, enhance4: int = None, boost1: int = None, boost2: int = None,
-                     common: int = None):
+async def fragupdate(interaction: discord.Interaction,
+                     origin: Optional[int] = None,
+                     enhance1: Optional[int] = None,
+                     enhance2: Optional[int] = None,
+                     enhance3: Optional[int] = None,
+                     enhance4: Optional[int] = None,
+                     boost1: Optional[int] = None,
+                     boost2: Optional[int] = None,
+                     common: Optional[int] = None):
     user_data = fragdata[str(interaction.user.id)]
     skillList = [origin, enhance1, enhance2, enhance3, enhance4, boost1, boost2, common]
     skillList_names = ["origin", "enhance1", "enhance2", "enhance3", "enhance4", "boost1", "boost2", "common"]
