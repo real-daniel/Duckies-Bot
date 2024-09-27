@@ -7,9 +7,11 @@ import requests
 import asyncio
 import random
 import json
+from typing import Optional
 from fragchart import fragchart
 import mysql.connector
 from mysql.connector import errorcode
+
 
 NewIntents = discord.Intents.default()
 NewIntents.message_content = True
