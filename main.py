@@ -19,10 +19,10 @@ NewIntents.reactions = True
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-SQLUSER = os.getenv('SQL_USER')
-SQLPASS = os.getenv('SQL_PASS')
-SQLDATABASE = os.getenv("SQL_DATABASE")
-SQLHOST = os.getenv('SQL_HOST')
+SQLUSER = os.getenv('MYSQL_USER')
+SQLPASS = os.getenv('MYSQL_PASS')
+SQLDATABASE = os.getenv("MYSQL_DATABASE")
+SQLHOST = os.getenv('MYSQL_HOST')
 
 client = discord.Client(intents=NewIntents)
 bot = commands.Bot(command_prefix="--", intents=NewIntents)
