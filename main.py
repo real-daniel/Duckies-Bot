@@ -167,7 +167,7 @@ async def fragupdate(interaction: discord.Interaction,
         if skillList[i] > 30:
             await interaction.response.send_message(f"Fuck you Tom")
         elif skillList[i] is not None:
-            user_data[skillList_names] = skill
+            user_data[skillList_names] = skillList[i]
     with open("data.json", "w") as json_file:
         json.dump(fragdata, json_file, indent=4)
     await interaction.response.send_message(f"{interaction.user.name} has successfully updated.")
