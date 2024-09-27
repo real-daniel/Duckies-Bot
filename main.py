@@ -161,6 +161,10 @@ async def fragregister(interaction: discord.Interaction, userclass: str):
 async def fragupdate(interaction: discord.Interaction, origin: int, enhance1: int, enhance2: int, enhance3: int,
                      enhance4: int, boost1: int, boost2: int, common: int):
     user_data = fragdata[str(interaction.user.id)]
+    tomCheck = [origin, enhance1, enhance2, enhance3, enhance4, boost1, boost2, common]
+    for i in tomCheck:
+        if i > 30:
+            await interaction.response.send_message(f"Fuck you Tom")
     user_data["origin"] = origin
     user_data["enhance1"] = enhance1
     user_data["enhance2"] = enhance2
