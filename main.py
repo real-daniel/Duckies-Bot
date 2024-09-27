@@ -27,24 +27,9 @@ SQLHOST = os.getenv('MYSQL_HOST')
 client = discord.Client(intents=NewIntents)
 bot = commands.Bot(command_prefix="--", intents=NewIntents)
 
-#SQL Database Cursor
 
-try:
-    print(f"SQL USER: {SQLUSER}, SQLPASS: {SQLPASS}, SQLDATABASE: {SQLDATABASE}, SQLHOST: {SQLHOST}")
-    cnx = mysql.connector.connect(user=SQLUSER, password=SQLPASS,
-                                  host=SQLHOST,
-                                  collation='utf8mb4_unicode_ci',
-                                  database=SQLDATABASE)
-    print("Connected to Database.")
-except mysql.connector.Error as err:
-    if err.errno == errorcode.ER_ACCESS_DENIED_ERROR:
-        print("Something is wrong with your user name or password")
-    elif err.errno == errorcode.ER_BAD_DB_ERROR:
-        print("Database does not exist")
-    else:
-        print(err)
-else:
-    cnx.close()
+
+
 
 
 def load_data():
@@ -127,21 +112,45 @@ async def fragregister(interaction: discord.Interaction, userclass: str):
         await interaction.response.send_message(
             f"{interaction.user.name} is already a registered user. Please use /fragupdate to update your info!")
 
-    #Create the cursor object to be able to execute commands in the SQL Database.
-    cursor = cnx.cursor()
-    #Get the user data from the database
-    cursor.execute(f"SELECT * FROM `users` WHERE discordID = '{interaction.user.id}'")
+    try:
+        # SQL Database Cursor
+        print(f"SQL USER: {SQLUSER}, SQLPASS: {SQLPASS}, SQLDATABASE: {SQLDATABASE}, SQLHOST: {SQLHOST}")
+        cnx = mysql.connector.connect(user=SQLUSER, password=SQLPASS,
+                                      host=SQLHOST,
+                                      collation='utf8mb4_unicode_ci',
+                                      database=SQLDATABASE)
+        print("Connected to Database.")
 
-    #Confirm the user exists and add him if he does not.
-    if cursor.rowcount == 0:
-        user_to_add = f"INSERT INTO `users`(`discordID`, `class`) VALUES ('{interaction.user.id}','{userclass}')"
-        cursor.execute(user_to_add)
-        cnx.commit()
-        await interaction.response.send_message(
-            f"{interaction.user.name} has successfully registered as a(n) {userclass}!")
+        # Create the cursor object to be able to execute commands in the SQL Database.
+        cursor = cnx.cursor()
+        # Get the user data from the database
+        cursor.execute(f"SELECT * FROM `users` WHERE discordID = '{interaction.user.id}'")
+
+        # Confirm the user exists and add him if he does not.
+        if cursor.rowcount == 0:
+            user_to_add = f"INSERT INTO `users`(`discordID`, `class`) VALUES ('{interaction.user.id}','{userclass}')"
+            cursor.execute(user_to_add)
+            cnx.commit()
+            await interaction.response.send_message(
+                f"{interaction.user.name} has successfully registered as a(n) {userclass}!")
+        else:
+            await interaction.response.send_message(
+                f"{interaction.user.name} is already a registered user. Please use /fragupdate to update your info!")
+    except mysql.connector.Error as err:
+        if err.errno == errorcode.ER_ACCESS_DENIED_ERROR:
+            print("Something is wrong with your user name or password")
+        elif err.errno == errorcode.ER_BAD_DB_ERROR:
+            print("Database does not exist")
+        else:
+            print(err)
     else:
-        await interaction.response.send_message(
-            f"{interaction.user.name} is already a registered user. Please use /fragupdate to update your info!")
+        cnx.close()
+
+
+
+
+
+
 
 
 
