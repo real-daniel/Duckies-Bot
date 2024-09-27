@@ -114,7 +114,6 @@ async def fragregister(interaction: discord.Interaction, userclass: str):
 
     try:
         # SQL Database Cursor
-        print(f"SQL USER: {SQLUSER}, SQLPASS: {SQLPASS}, SQLDATABASE: {SQLDATABASE}, SQLHOST: {SQLHOST}")
         cnx = mysql.connector.connect(user=SQLUSER, password=SQLPASS,
                                       host=SQLHOST,
                                       collation='utf8mb4_unicode_ci',
@@ -131,17 +130,9 @@ async def fragregister(interaction: discord.Interaction, userclass: str):
         if cursor.rowcount == 0:
             cursor.reset()
             user_to_add = f"INSERT INTO `users`(`discordID`, `class`) VALUES ('{interaction.user.id}','{userclass}')"
-            print(user_to_add)
-            print(interaction.user.id)
-            print(userclass)
             cursor.execute(user_to_add)
-            print("executed")
             cnx.commit()
-            print("commited")
             cnx.close()
-            print("closed")
-            await interaction.response.send_message(
-                f"{interaction.user.name} has successfully registered as a(n) {userclass}!")
         else:
             await interaction.response.send_message(
                 f"{interaction.user.name} is already a registered user. Please use /fragupdate to update your info!")
