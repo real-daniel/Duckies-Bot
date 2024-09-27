@@ -163,7 +163,7 @@ async def fragupdate(interaction: discord.Interaction,
     user_data = fragdata[str(interaction.user.id)]
     skillList = [origin, enhance1, enhance2, enhance3, enhance4, boost1, boost2, common]
     skillList_names = ["origin", "enhance1", "enhance2", "enhance3", "enhance4", "boost1", "boost2", "common"]
-    for i in len(skillList):
+    for i in range(len(skillList)):
         if skillList[i] > 30:
             await interaction.response.send_message(f"Fuck you Tom")
         elif skillList[i] is not None:
