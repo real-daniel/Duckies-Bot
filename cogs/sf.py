@@ -1,6 +1,7 @@
 import os
 import discord
-from discord.ext import commands, app_commands
+from discord import app_commands
+from discord.ext import commands
 from dotenv import load_dotenv
 # import requests
 import asyncio
@@ -8,14 +9,14 @@ import random
 from sfstats import sfstats
 
 
-class SfCalc():
+class SfCalc(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
     @app_commands.command(name="sfcalc", description="returns starforce stats for specified equipment. for safeguard/starcatch, write yes/no")
     async def sfcalc(self, interaction: discord.Interaction, lv: int, start:int, end:int, sg: str, sc: str, trials: int = 1000):
         sg = True if sg.lower() == "yes" else False
-        sc = True if sg.lower() == "yes" else False
+        sc = True if sc.lower() == "yes" else False
         lv = int(lv)
         start = int(start)
         end = int(end)
@@ -80,7 +81,6 @@ class SfCalc():
         tmedianCost = totalCosts[int(len(totalCosts) / 2)]
         avgBooms = round(sum(totalBooms) / len(totalBooms), 2)
         medianBooms = totalBooms[int(len(totalCosts) / 2)]
-        print(avgCost, avgBooms)
         await interaction.response.send_message(f"{avgCost}, {avgBooms}")
 
 

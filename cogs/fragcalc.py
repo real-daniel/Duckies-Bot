@@ -98,22 +98,13 @@ async def fraginfo(interaction: discord.Interaction):
         fragcalc("boost", user_data["boost2"])[0],
         fragcalc("common", user_data["common"])[0]
     ]
-    embed = discord.Embed(
-        colour=discord.Colour.dark_teal(),
-        title=f"User Info - {interaction.user.name}",
-        description=f"""
-        Class: {user_data["class"]}\n
-        Origin: {user_data["origin"]} | Frags Spent: {fragdatalist[0]}\n
-        Enhance 1: {user_data["enhance1"] } | Frags Spent: {fragdatalist[1]}\n
-        Enhance 2: {user_data["enhance2"]}  | Frags Spent: {fragdatalist[2]}\n
-        Enhance 3: {user_data["enhance3"]} | Frags Spent: {fragdatalist[3]}\n
-        Enhance 4: {user_data["enhance4"]} | Frags Spent: {fragdatalist[4]}\n
-        Boost 1: {user_data["boost1"]} | Frags Spent: {fragdatalist[5]}\n
-        Boost 2: {user_data["boost2"]} | Frags Spent: {fragdatalist[6]}\n
-        Common: {user_data["common"]} | Frags Spent: {fragdatalist[7]}\n
-        Total Frags Spent: {sum(fragdatalist)}
-"""
-    )
+
+    embed = discord.Embed(title=f"User Name - {interaction.user.name}", colour=discord.Colour.dark_teal())
+    embed.add_field(name="V-Enhance Cores", value=f"""Enhance 1: {user_data["enhance1"] } | Frags Spent: {fragdatalist[1]}\nEnhance 2: {user_data["enhance2"]}  | Frags Spent: {fragdatalist[2]}\nEnhance 3: {user_data["enhance3"]} | Frags Spent: {fragdatalist[3]}\nEnhance 4: {user_data["enhance4"]} | Frags Spent: {fragdatalist[4]}""", inline=True)
+    embed.add_field(name="Mastery Cores", value=f"""Boost 1: {user_data["boost1"]} | Frags Spent: {fragdatalist[5]}\nBoost 2: {user_data["boost2"]} | Frags Spent: {fragdatalist[6]}""", inline=True)
+    embed.add_field(name="Common Cores", value=f"""Common: {user_data["common"]} | Frags Spent: {fragdatalist[7]}""", inline=True)
+    embed.add_field(name="Total Spent", value=f"""{sum(fragdatalist)} Fragments""")
+
     await interaction.response.send_message(embed=embed)
 
 
