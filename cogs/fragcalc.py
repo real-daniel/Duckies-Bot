@@ -91,7 +91,7 @@ class FragCalc(commands.Cog):
         try:
             user_data = fragData[str(interaction.user.id)]
         except KeyError:
-            interaction.response.send_message("No user registered")
+            await interaction.response.send_message("No user registered")
         fragdatalist = [
             fragcalc("origin", user_data["origin"]),
             fragcalc("enhance", user_data["enhance1"]),
