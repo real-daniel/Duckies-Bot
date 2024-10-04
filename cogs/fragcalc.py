@@ -106,6 +106,11 @@ class FragCalc(commands.Cog):
             totalRemaining += skill[1]
         embed = discord.Embed(title=f"User Name - {interaction.user.name}", colour=discord.Colour.dark_teal())
         embed.add_field(
+            name="**★ ORIGIN ★**",
+            value=f"""
+                    **Origin**: {user_data["origin"]} | **Frags Spent**: {fragdatalist[0][0]} | **Frags Remaining**: {fragdatalist[0][1]}""",
+            inline=False)
+        embed.add_field(
             name="**★ V-ENHANCE CORES ★**",
             value=f"""
             **Enhance 1**: {user_data["enhance1"]} | **Frags Spent**: {fragdatalist[1][0]} | **Frags Remaining**: {fragdatalist[1][1]}\n
