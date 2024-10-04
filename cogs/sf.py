@@ -9,14 +9,33 @@ import random
 from sfstats import sfstats
 
 
+class SfButton(discord.ui.Button):
+    def __init__(self, label, value):
+        super().__init__(label=label, style=discord.ButtonStyle.primary)
+        self.value = value
+
+    def callback(self, interaction: discord.Interaction):
+        return self.value
+
+class SfView(discord.ui.View):
+    def __init__(self):
+        super().__init__()
+        self.add_item(SfButton(label="No Event ☠️", value=1))
+        self.add_item(SfButton(label="5/10/15", value=2))
+        self.add_item(SfButton(label="30% Off", value=3))
+        self.add_item(SfButton(label="Shining", value=4))
+
+
 class SfCalc(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
     @app_commands.command(name="sfcalc", description="returns starforce stats for specified equipment. for safeguard/starcatch, write yes/no")
-    async def sfcalc(self, interaction: discord.Interaction, lv: int, start:int, end:int, sg: str, sc: str, trials: int = 1000):
-        sg = True if sg.lower() == "yes" else False
-        sc = True if sc.lower() == "yes" else False
+    async def sfcalc(self, interaction: discord.Interaction, lv: int, start:int, end:int, safeguard: str, starcatch: str, trials: int = 1000):
+        view= SfView()
+        event = interaction.response.send_message(view=view)
+        sg = True if safeguard.lower() == "yes" else False
+        sc = True if starcatch.lower() == "yes" else False
         lv = int(lv)
         start = int(start)
         end = int(end)
