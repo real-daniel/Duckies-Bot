@@ -38,7 +38,8 @@ def fragcalc(skill, level):
         fragSpent += currentSkill[i][1]
     for i in range (start, 30):
         fragTotal += currentSkill[i][1]
-    return [fragSpent, fragTotal]
+    fragsRemaining = fragTotal - fragSpent
+    return [fragSpent, fragsRemaining]
 
 
 class FragCalc(commands.Cog):
@@ -70,7 +71,7 @@ class FragCalc(commands.Cog):
             )
 
     @app_commands.command(name="fragupdate", description="Update your frag count")
-    async def fragupdate(interaction: discord.Interaction, origin: int, enhance1: int, enhance2: int, enhance3: int,
+    async def fragupdate(self, interaction: discord.Interaction, origin: int, enhance1: int, enhance2: int, enhance3: int,
                          enhance4: int, boost1: int, boost2: int, common: int):
         user_data = fragData[str(interaction.user.id)]
         user_data["origin"] = origin
@@ -85,27 +86,52 @@ class FragCalc(commands.Cog):
             json.dump(fragData, json_file, indent=4)
         await interaction.response.send_message(f"{interaction.user.name} has successfully updated.")
 
-@app_commands.command(name="fraginfo", description="Show user info")
-async def fraginfo(interaction: discord.Interaction):
-    user_data = fragData[str(interaction.user.id)]
-    fragdatalist = [
-        fragcalc("origin", user_data["origin"])[0],
-        fragcalc("enhance", user_data["enhance1"])[0],
-        fragcalc("enhance", user_data["enhance2"])[0],
-        fragcalc("enhance", user_data["enhance3"])[0],
-        fragcalc("enhance", user_data["enhance4"])[0],
-        fragcalc("boost", user_data["boost1"])[0],
-        fragcalc("boost", user_data["boost2"])[0],
-        fragcalc("common", user_data["common"])[0]
-    ]
+    @app_commands.command(name="fraginfo", description="Show user info")
+    async def fraginfo(self, interaction: discord.Interaction):
+        user_data = fragData[str(interaction.user.id)]
+        fragdatalist = [
+            fragcalc("origin", user_data["origin"]),
+            fragcalc("enhance", user_data["enhance1"]),
+            fragcalc("enhance", user_data["enhance2"]),
+            fragcalc("enhance", user_data["enhance3"]),
+            fragcalc("enhance", user_data["enhance4"]),
+            fragcalc("boost", user_data["boost1"]),
+            fragcalc("boost", user_data["boost2"]),
+            fragcalc("common", user_data["common"])
+        ]
+        totalSpent = 0
+        totalRemaining = 0
+        for skill in fragdatalist:
+            totalSpent += skill[0]
+            totalRemaining += skill[1]
+        embed = discord.Embed(title=f"User Name - {interaction.user.name}", colour=discord.Colour.dark_teal())
+        embed.add_field(
+            name="**★ V-ENHANCE CORES ★**",
+            value=f"""
+            **Enhance 1**: {user_data["enhance1"]} | **Frags Spent**: {fragdatalist[1][0]} | **Frags Remaining**: {fragdatalist[1][1]}\n
+            **Enhance 2**: {user_data["enhance2"]} | **Frags Spent**: {fragdatalist[2][0]} | **Frags Remaining**: {fragdatalist[2][1]}\n
+            **Enhance 3**: {user_data["enhance3"]} | **Frags Spent**: {fragdatalist[3][0]} | **Frags Remaining**: {fragdatalist[3][1]}\n
+            **Enhance 4**: {user_data["enhance4"]} | **Frags Spent**: {fragdatalist[4][0]} | **Frags Remaining**: {fragdatalist[4][1]}""",
+            inline=False)
+        embed.add_field(
+            name="**★ MASTERY CORES ★**",
+            value=f"""
+            **Mastery 1**: {user_data["boost1"]} | **Frags Spent**: {fragdatalist[5][0]} | **Frags Remaining**: {fragdatalist[5][1]}\n
+            **Mastery 2**: {user_data["boost2"]} | **Frags Spent**: {fragdatalist[6][0]} | **Frags Remaining**: {fragdatalist[6][1]}""",
+            inline=False)
+        embed.add_field(
+            name="**★ COMMON CORES ★**",
+            value=f"""
+            **Common**: {user_data["common"]} | **Frags Spent**: {fragdatalist[7][0]} | **Frags Remaining**: {fragdatalist[7][1]}""",
+            inline=False)
+        embed.add_field(
+            name="**★ TOTALS ★**",
+            value=f"""
+            **Total Spent**: {totalSpent} Fragments\n
+            **Total Remaining**: {totalRemaining} Fragments""",
+            inline=False)
 
-    embed = discord.Embed(title=f"User Name - {interaction.user.name}", colour=discord.Colour.dark_teal())
-    embed.add_field(name="V-Enhance Cores", value=f"""Enhance 1: {user_data["enhance1"] } | Frags Spent: {fragdatalist[1]}\nEnhance 2: {user_data["enhance2"]}  | Frags Spent: {fragdatalist[2]}\nEnhance 3: {user_data["enhance3"]} | Frags Spent: {fragdatalist[3]}\nEnhance 4: {user_data["enhance4"]} | Frags Spent: {fragdatalist[4]}""", inline=True)
-    embed.add_field(name="Mastery Cores", value=f"""Boost 1: {user_data["boost1"]} | Frags Spent: {fragdatalist[5]}\nBoost 2: {user_data["boost2"]} | Frags Spent: {fragdatalist[6]}""", inline=True)
-    embed.add_field(name="Common Cores", value=f"""Common: {user_data["common"]} | Frags Spent: {fragdatalist[7]}""", inline=True)
-    embed.add_field(name="Total Spent", value=f"""{sum(fragdatalist)} Fragments""")
-
-    await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
 
 async def setup(bot):

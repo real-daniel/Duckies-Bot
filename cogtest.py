@@ -22,8 +22,6 @@ client = discord.Client(intents=NewIntents)
 bot = commands.Bot(command_prefix="--", intents=NewIntents)
 
 
-
-
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
