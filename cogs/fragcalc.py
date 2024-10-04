@@ -88,7 +88,10 @@ class FragCalc(commands.Cog):
 
     @app_commands.command(name="fraginfo", description="Show user info")
     async def fraginfo(self, interaction: discord.Interaction):
-        user_data = fragData[str(interaction.user.id)]
+        try:
+            user_data = fragData[str(interaction.user.id)]
+        except KeyError:
+            interaction.response.send_message("No user registered")
         fragdatalist = [
             fragcalc("origin", user_data["origin"]),
             fragcalc("enhance", user_data["enhance1"]),
