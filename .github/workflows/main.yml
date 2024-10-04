@@ -20,6 +20,6 @@ jobs:
           username: ${{ secrets.SFTP_USERNAME }}
           password: ${{ secrets.SFTP_PASSWORD }}
           port: 22
-          localDir: ./ # Path to the files on your local machine (GitHub runner)
-          remoteDir: / # Path on your server where files should be uploaded
+          local-dir: ./ # Path to the files on your local machine (GitHub runner)
+          remote-dir: / # Path on your server where files should be uploaded
           protocol: sftp # Specify protocol as sftp
