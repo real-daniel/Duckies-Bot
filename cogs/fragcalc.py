@@ -92,58 +92,59 @@ class FragCalc(commands.Cog):
             user_data = fragData[str(interaction.user.id)]
         except KeyError:
             await interaction.response.send_message("No user registered")
-        fragdatalist = [
-            fragcalc("origin", user_data["origin"]),
-            fragcalc("enhance", user_data["enhance1"]),
-            fragcalc("enhance", user_data["enhance2"]),
-            fragcalc("enhance", user_data["enhance3"]),
-            fragcalc("enhance", user_data["enhance4"]),
-            fragcalc("boost", user_data["boost1"]),
-            fragcalc("boost", user_data["boost2"]),
-            fragcalc("common", user_data["common"])
-        ]
-        totalSpent = 0
-        totalRemaining = 0
-        for skill in fragdatalist:
-            totalSpent += skill[0]
-            totalRemaining += skill[1]
-        embed = discord.Embed(title=f"User Name - {interaction.user.name}", colour=discord.Colour.dark_teal())
-        embed.add_field(
-            name="**★ ORIGIN ★**",
-            value=f"""
-                    **Origin**: {user_data["origin"]} | **Frags Spent**: {fragdatalist[0][0]} | **Frags Remaining**: {fragdatalist[0][1]}""",
-            inline=False)
-        embed.add_field(name='\u200b', value='\u200b', inline=False)
-        embed.add_field(
-            name="**★ V-ENHANCE CORES ★**",
-            value=f"""
-            **Enhance 1**: {user_data["enhance1"]} | **Frags Spent**: {fragdatalist[1][0]} | **Frags Remaining**: {fragdatalist[1][1]}\n
-            **Enhance 2**: {user_data["enhance2"]} | **Frags Spent**: {fragdatalist[2][0]} | **Frags Remaining**: {fragdatalist[2][1]}\n
-            **Enhance 3**: {user_data["enhance3"]} | **Frags Spent**: {fragdatalist[3][0]} | **Frags Remaining**: {fragdatalist[3][1]}\n
-            **Enhance 4**: {user_data["enhance4"]} | **Frags Spent**: {fragdatalist[4][0]} | **Frags Remaining**: {fragdatalist[4][1]}""",
-            inline=False)
-        embed.add_field(name='\u200b', value='\u200b', inline=False)
-        embed.add_field(
-            name="**★ MASTERY CORES ★**",
-            value=f"""
-            **Mastery 1**: {user_data["boost1"]} | **Frags Spent**: {fragdatalist[5][0]} | **Frags Remaining**: {fragdatalist[5][1]}\n
-            **Mastery 2**: {user_data["boost2"]} | **Frags Spent**: {fragdatalist[6][0]} | **Frags Remaining**: {fragdatalist[6][1]}""",
-            inline=False)
-        embed.add_field(name='\u200b', value='\u200b', inline=False)
-        embed.add_field(
-            name="**★ COMMON CORES ★**",
-            value=f"""
-            **Common**: {user_data["common"]} | **Frags Spent**: {fragdatalist[7][0]} | **Frags Remaining**: {fragdatalist[7][1]}""",
-            inline=False)
-        embed.add_field(name='\u200b', value='\u200b', inline=False)
-        embed.add_field(
-            name="**★ TOTALS ★**",
-            value=f"""
-            **Total Spent**: {totalSpent} Fragments\n
-            **Total Remaining**: {totalRemaining} Fragments""",
-            inline=False)
+        else:
+            fragdatalist = [
+                fragcalc("origin", user_data["origin"]),
+                fragcalc("enhance", user_data["enhance1"]),
+                fragcalc("enhance", user_data["enhance2"]),
+                fragcalc("enhance", user_data["enhance3"]),
+                fragcalc("enhance", user_data["enhance4"]),
+                fragcalc("boost", user_data["boost1"]),
+                fragcalc("boost", user_data["boost2"]),
+                fragcalc("common", user_data["common"])
+            ]
+            totalSpent = 0
+            totalRemaining = 0
+            for skill in fragdatalist:
+                totalSpent += skill[0]
+                totalRemaining += skill[1]
+            embed = discord.Embed(title=f"User Name - {interaction.user.name}", colour=discord.Colour.dark_teal())
+            embed.add_field(
+                name="**★ ORIGIN ★**",
+                value=f"""
+                        **Origin**: {user_data["origin"]} | **Frags Spent**: {fragdatalist[0][0]} | **Frags Remaining**: {fragdatalist[0][1]}""",
+                inline=False)
+            embed.add_field(name='\u200b', value='\u200b', inline=False)
+            embed.add_field(
+                name="**★ V-ENHANCE CORES ★**",
+                value=f"""
+                **Enhance 1**: {user_data["enhance1"]} | **Frags Spent**: {fragdatalist[1][0]} | **Frags Remaining**: {fragdatalist[1][1]}\n
+                **Enhance 2**: {user_data["enhance2"]} | **Frags Spent**: {fragdatalist[2][0]} | **Frags Remaining**: {fragdatalist[2][1]}\n
+                **Enhance 3**: {user_data["enhance3"]} | **Frags Spent**: {fragdatalist[3][0]} | **Frags Remaining**: {fragdatalist[3][1]}\n
+                **Enhance 4**: {user_data["enhance4"]} | **Frags Spent**: {fragdatalist[4][0]} | **Frags Remaining**: {fragdatalist[4][1]}""",
+                inline=False)
+            embed.add_field(name='\u200b', value='\u200b', inline=False)
+            embed.add_field(
+                name="**★ MASTERY CORES ★**",
+                value=f"""
+                **Mastery 1**: {user_data["boost1"]} | **Frags Spent**: {fragdatalist[5][0]} | **Frags Remaining**: {fragdatalist[5][1]}\n
+                **Mastery 2**: {user_data["boost2"]} | **Frags Spent**: {fragdatalist[6][0]} | **Frags Remaining**: {fragdatalist[6][1]}""",
+                inline=False)
+            embed.add_field(name='\u200b', value='\u200b', inline=False)
+            embed.add_field(
+                name="**★ COMMON CORES ★**",
+                value=f"""
+                **Common**: {user_data["common"]} | **Frags Spent**: {fragdatalist[7][0]} | **Frags Remaining**: {fragdatalist[7][1]}""",
+                inline=False)
+            embed.add_field(name='\u200b', value='\u200b', inline=False)
+            embed.add_field(
+                name="**★ TOTALS ★**",
+                value=f"""
+                **Total Spent**: {totalSpent} Fragments\n
+                **Total Remaining**: {totalRemaining} Fragments""",
+                inline=False)
 
-        await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed)
 
 
 async def setup(bot):
