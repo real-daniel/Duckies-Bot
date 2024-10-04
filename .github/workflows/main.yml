@@ -14,11 +14,12 @@ jobs:
         uses: actions/checkout@v3
       
       - name: Sync files via SFTP
-        uses: AEnterprise/sftp-deploy@v2.0.0 # Use the correct action for SFTP
+        uses: appleboy/scp-action@master # Use the latest stable version
         with:
-          host: ${{ secrets.SFTP_SERVER }}      # Ensure this is set correctly in GitHub Secrets
-          username: ${{ secrets.SFTP_USERNAME }}  # Ensure this is set correctly in GitHub Secrets
-          password: ${{ secrets.SFTP_PASSWORD }}  # Ensure this is set correctly in GitHub Secrets
-          port: 22                                 # Default SFTP port; adjust if your server uses a different one
-          localPath: ./                            # Path to the files on your local machine (GitHub runner)
-          remotePath: /                            # Path on your server where files should be uploaded
+          host: ${{ secrets.SFTP_SERVER }}      # Your SFTP server address
+          username: ${{ secrets.SFTP_USERNAME }}  # Your SFTP username
+          password: ${{ secrets.SFTP_PASSWORD }}  # Your SFTP password
+          port: 22                                 # SFTP port, typically 22
+          source: "./**"                           # Local files to upload
+          target: "/path/to/your/remote/dir/"     # Remote directory where files should be uploaded
+          strip_components: 1                      # Optional: Strip the first component of the path
