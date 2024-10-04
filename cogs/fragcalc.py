@@ -112,31 +112,27 @@ class FragCalc(commands.Cog):
             embed.add_field(
                 name="**★ ORIGIN ★**",
                 value=f"""
-                        **Origin**: {user_data["origin"]} | **Frags Spent**: {fragdatalist[0][0]} | **Frags Remaining**: {fragdatalist[0][1]}""",
+                        **Origin**: {user_data["origin"]} | **Frags Spent**: {fragdatalist[0][0]} | **Frags Remaining**: {fragdatalist[0][1]}\n""",
                 inline=False)
-            embed.add_field(name='\u200b', value='\u200b', inline=False)
             embed.add_field(
                 name="**★ V-ENHANCE CORES ★**",
                 value=f"""
                 **Enhance 1**: {user_data["enhance1"]} | **Frags Spent**: {fragdatalist[1][0]} | **Frags Remaining**: {fragdatalist[1][1]}\n
                 **Enhance 2**: {user_data["enhance2"]} | **Frags Spent**: {fragdatalist[2][0]} | **Frags Remaining**: {fragdatalist[2][1]}\n
                 **Enhance 3**: {user_data["enhance3"]} | **Frags Spent**: {fragdatalist[3][0]} | **Frags Remaining**: {fragdatalist[3][1]}\n
-                **Enhance 4**: {user_data["enhance4"]} | **Frags Spent**: {fragdatalist[4][0]} | **Frags Remaining**: {fragdatalist[4][1]}""",
+                **Enhance 4**: {user_data["enhance4"]} | **Frags Spent**: {fragdatalist[4][0]} | **Frags Remaining**: {fragdatalist[4][1]}\n""",
                 inline=False)
-            embed.add_field(name='\u200b', value='\u200b', inline=False)
             embed.add_field(
                 name="**★ MASTERY CORES ★**",
                 value=f"""
                 **Mastery 1**: {user_data["boost1"]} | **Frags Spent**: {fragdatalist[5][0]} | **Frags Remaining**: {fragdatalist[5][1]}\n
-                **Mastery 2**: {user_data["boost2"]} | **Frags Spent**: {fragdatalist[6][0]} | **Frags Remaining**: {fragdatalist[6][1]}""",
+                **Mastery 2**: {user_data["boost2"]} | **Frags Spent**: {fragdatalist[6][0]} | **Frags Remaining**: {fragdatalist[6][1]}\n""",
                 inline=False)
-            embed.add_field(name='\u200b', value='\u200b', inline=False)
             embed.add_field(
                 name="**★ COMMON CORES ★**",
                 value=f"""
-                **Common**: {user_data["common"]} | **Frags Spent**: {fragdatalist[7][0]} | **Frags Remaining**: {fragdatalist[7][1]}""",
+                **Common**: {user_data["common"]} | **Frags Spent**: {fragdatalist[7][0]} | **Frags Remaining**: {fragdatalist[7][1]}\n""",
                 inline=False)
-            embed.add_field(name='\u200b', value='\u200b', inline=False)
             embed.add_field(
                 name="**★ TOTALS ★**",
                 value=f"""
