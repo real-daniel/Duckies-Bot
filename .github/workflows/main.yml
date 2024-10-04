@@ -16,10 +16,10 @@ jobs:
       - name: Sync files via SFTP
         uses: SamKirkland/FTP-Deploy-Action@v4.3.4
         with:
-          server: ${{ secrets.SFTP_SERVER }}
-          username: ${{ secrets.SFTP_USERNAME }}
-          password: ${{ secrets.SFTP_PASSWORD }}
-          port: 22
-          local-dir: ./ # Path to the files on your local machine (GitHub runner)
-          remote-dir: / # Path on your server where files should be uploaded
-          protocol: sftp # Specify protocol as sftp
+          server: ${{ secrets.SFTP_SERVER }}      # Ensure this is set correctly in GitHub Secrets
+          username: ${{ secrets.SFTP_USERNAME }}  # Ensure this is set correctly in GitHub Secrets
+          password: ${{ secrets.SFTP_PASSWORD }}  # Ensure this is set correctly in GitHub Secrets
+          port: 22                                 # Default SFTP port; adjust if your server uses a different one
+          protocol: sftp                           # Specify protocol as sftp
+          local-dir: ./                            # Path to the files on your local machine (GitHub runner)
+          server-dir: /                            # Path on your server where files should be uploaded
