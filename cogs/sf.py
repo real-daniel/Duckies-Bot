@@ -14,12 +14,16 @@ class SfButton(discord.ui.Button):
         super().__init__(label=label, style=discord.ButtonStyle.primary)
         self.value = value
 
-    def callback(self, interaction: discord.Interaction):
-        return self.value
+    async def callback(self, interaction: discord.Interaction):
+        self.view.value = self.value
+        self.view.clear_items()
+        await interaction.response.edit_message(content=f"Calculating...", view=self.view)
+        self.view.stop()
 
 class SfView(discord.ui.View):
     def __init__(self):
         super().__init__()
+        self.value = None
         self.add_item(SfButton(label="No Event ☠️", value=1))
         self.add_item(SfButton(label="5/10/15", value=2))
         self.add_item(SfButton(label="30% Off", value=3))
@@ -32,8 +36,10 @@ class SfCalc(commands.Cog):
 
     @app_commands.command(name="sfcalc", description="returns starforce stats for specified equipment. for safeguard/starcatch, write yes/no")
     async def sfcalc(self, interaction: discord.Interaction, lv: int, start:int, end:int, safeguard: str, starcatch: str, trials: int = 1000):
-        view= SfView()
-        event = interaction.response.send_message(view=view)
+        view = SfView()
+        await interaction.response.send_message(view=view)
+        await view.wait()
+        event = view.value
         sg = True if safeguard.lower() == "yes" else False
         sc = True if starcatch.lower() == "yes" else False
         lv = int(lv)
@@ -97,10 +103,12 @@ class SfCalc(commands.Cog):
             totalCosts.append(totalCost)
             totalBooms.append(boomCount)
         avgCost = round(sum(totalCosts) / len(totalCosts), 2)
-        tmedianCost = totalCosts[int(len(totalCosts) / 2)]
+        medianCost = totalCosts[int(len(totalCosts) / 2)]
         avgBooms = round(sum(totalBooms) / len(totalBooms), 2)
         medianBooms = totalBooms[int(len(totalCosts) / 2)]
-        await interaction.response.send_message(f"{avgCost}, {avgBooms}")
+        result = f"{avgCost}, {avgBooms}"
+        await interaction.edit_original_response(content=result)
+
 
 
 async def setup(bot):
