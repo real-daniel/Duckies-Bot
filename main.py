@@ -42,7 +42,7 @@ async def synccmd(ctx):
 # global sync
 @bot.command()
 async def globalsync(ctx):
-    if ctx.author.id == 188775984357572608:
+    if ctx.author.id == os.getenv('OWNER_ID'):
         synced = await bot.tree.sync()
         await ctx.send(
             f"Synced {len(synced)} commands globally"

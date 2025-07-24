@@ -57,6 +57,8 @@ class FragCalc(commands.Cog):
                                                   "enhance4": 0,
                                                   "boost1": 0,
                                                   "boost2": 0,
+                                                  "boost3": 0,
+                                                  "boost4": 0,
                                                   "common": 0,
                                                   }
             with open("data.json", "w") as json_file:
@@ -72,7 +74,7 @@ class FragCalc(commands.Cog):
 
     @app_commands.command(name="fragupdate", description="Update your frag count")
     async def fragupdate(self, interaction: discord.Interaction, origin: int, enhance1: int, enhance2: int, enhance3: int,
-                         enhance4: int, boost1: int, boost2: int, common: int):
+                         enhance4: int, boost1: int, boost2: int, boost3: int, boost4: int, common: int):
         user_data = fragData[str(interaction.user.id)]
         user_data["origin"] = origin
         user_data["enhance1"] = enhance1
@@ -81,6 +83,8 @@ class FragCalc(commands.Cog):
         user_data["enhance4"] = enhance4
         user_data["boost1"] = boost1
         user_data["boost2"] = boost2
+        user_data["boost3"] = boost3
+        user_data["boost4"] = boost4
         user_data["common"] = common
         with open("data.json", "w") as json_file:
             json.dump(fragData, json_file, indent=4)
@@ -101,6 +105,8 @@ class FragCalc(commands.Cog):
                 fragcalc("enhance", user_data["enhance4"]),
                 fragcalc("boost", user_data["boost1"]),
                 fragcalc("boost", user_data["boost2"]),
+                fragcalc("boost", user_data["boost3"]),
+                fragcalc("boost", user_data["boost4"]),
                 fragcalc("common", user_data["common"])
             ]
             totalSpent = 0
@@ -126,7 +132,9 @@ class FragCalc(commands.Cog):
                 name="**★ MASTERY CORES ★**",
                 value=f"""
                 **Mastery 1**: {user_data["boost1"]} | **Frags Spent**: {fragdatalist[5][0]} | **Frags Remaining**: {fragdatalist[5][1]}\n
-                **Mastery 2**: {user_data["boost2"]} | **Frags Spent**: {fragdatalist[6][0]} | **Frags Remaining**: {fragdatalist[6][1]}\n\u200b""",
+                **Mastery 2**: {user_data["boost2"]} | **Frags Spent**: {fragdatalist[6][0]} | **Frags Remaining**: {fragdatalist[6][1]}\n
+                **Mastery 3**: {user_data["boost1"]} | **Frags Spent**: {fragdatalist[5][0]} | **Frags Remaining**: {fragdatalist[5][1]}\n
+                **Mastery 4**: {user_data["boost2"]} | **Frags Spent**: {fragdatalist[6][0]} | **Frags Remaining**: {fragdatalist[6][1]}\n\u200b""",
                 inline=False)
             embed.add_field(
                 name="**★ COMMON CORES ★**",
