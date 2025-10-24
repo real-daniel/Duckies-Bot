@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 # import requests
 import asyncio
 import random
-from sfstats import sfstats
+from data.sfstats import sfstats
+
 
 
 class SfButton(discord.ui.Button):

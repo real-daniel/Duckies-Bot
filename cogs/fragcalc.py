@@ -8,7 +8,7 @@ import requests
 import asyncio
 import random
 import json
-from fragchart import fragchart
+from data.fragchart import fragchart
 
 
 def load_data():
