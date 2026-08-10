@@ -1,4 +1,7 @@
 
-data.json
+.env
+.pytest_cache/
+.venv/
+*.egg-info/
 __pycache__/
-cogs/__pycache__/
+data.json

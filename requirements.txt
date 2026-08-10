@@ -1,0 +1,5 @@
+aiohttp>=3.10,<4
+discord.py>=2.6,<3
+python-dotenv>=1.0,<2
+rapidocr>=3.9,<4
+onnxruntime>=1.22,<2
