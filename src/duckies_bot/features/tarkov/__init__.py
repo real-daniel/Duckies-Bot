@@ -4,9 +4,14 @@ from .models import (
     AggregatedTaskItem,
     AggregatedTaskKey,
     OCRLine,
+    PriceHistoryPoint,
+    PricedIngredient,
+    ProfitRecipe,
+    ProfitResult,
     QuestLogMapGroup,
     QuestLogMatch,
     QuestLogSummary,
+    RecipeIngredient,
     ServerComponentStatus,
     ServerStatusMessage,
     TarkovItem,
@@ -17,9 +22,12 @@ from .models import (
     TaskObjective,
     TaskRewardItem,
     TaskRewards,
+    TraderFlipCandidate,
+    TraderFlipResult,
     VendorPrice,
 )
 from .quest_log import OCRProvider, QuestLogService, TaskCatalogProvider
+from .profit import ProfitProvider, ProfitService
 from .service import ItemProvider, TarkovProvider, TarkovService
 
 __all__ = [
@@ -29,10 +37,17 @@ __all__ = [
     "ItemProvider",
     "OCRLine",
     "OCRProvider",
+    "PriceHistoryPoint",
+    "PricedIngredient",
+    "ProfitProvider",
+    "ProfitRecipe",
+    "ProfitResult",
+    "ProfitService",
     "QuestLogMapGroup",
     "QuestLogMatch",
     "QuestLogService",
     "QuestLogSummary",
+    "RecipeIngredient",
     "ServerComponentStatus",
     "ServerStatusMessage",
     "TarkovProvider",
@@ -45,5 +60,7 @@ __all__ = [
     "TaskObjective",
     "TaskRewardItem",
     "TaskRewards",
+    "TraderFlipCandidate",
+    "TraderFlipResult",
     "VendorPrice",
 ]

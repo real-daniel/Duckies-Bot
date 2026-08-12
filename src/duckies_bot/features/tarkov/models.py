@@ -240,3 +240,34 @@ class ProfitResult:
     duration_seconds: int | None
     buy_limit: int | None
     warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TraderFlipCandidate:
+    item_id: str
+    item_name: str
+    trader_name: str
+    trader_price: int
+    snapshot_flea_price: int
+    min_trader_level: int | None
+    required_player_level: int | None
+    task_unlock_name: str | None
+    buy_limit: int | None
+    restock_amount: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class TraderFlipResult:
+    item_name: str
+    trader_name: str
+    trader_price: int
+    flea_price: int
+    price_source: str
+    gross_profit_each: int
+    roi_percent: float
+    min_trader_level: int | None
+    required_player_level: int | None
+    task_unlock_name: str | None
+    buy_limit: int | None
+    restock_amount: int | None
+    low_liquidity: bool

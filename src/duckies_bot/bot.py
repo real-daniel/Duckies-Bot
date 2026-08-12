@@ -5,12 +5,18 @@ import logging
 import discord
 from discord.ext import commands
 
+from .cogs.deadlock import DeadlockCog
+from .cogs.steam import SteamCog
 from .cogs.tarkov import TarkovCog
 from .config import Settings, load_settings
+from .features.deadlock import DeadlockScreenshotReader, DeadlockService, ScoutTemplateCache
 from .features.tarkov.service import TarkovService
 from .features.tarkov.quest_log import QuestLogService
+from .features.tarkov.profit import ProfitService
 from .providers.ocr import RapidOCRProvider
+from .providers.deadlock import DeadlockClient, DeadlockLiveClient
 from .providers.tarkov.client import TarkovClient
+from .storage import BroadcastURLRepository, SteamLinkRepository
 
 
 LOGGER = logging.getLogger(__name__)
@@ -25,14 +31,53 @@ class DuckiesBot(commands.Bot):
             timeout_seconds=settings.http_timeout_seconds,
         )
         self.tarkov_service = TarkovService(self.tarkov_client)
+        self.deadlock_client = DeadlockClient(
+            base_url=settings.deadlock_api_url,
+            timeout_seconds=settings.http_timeout_seconds,
+            api_key=settings.deadlock_api_key,
+        )
+        self.deadlock_live_client = DeadlockLiveClient(
+            base_url=settings.deadlock_live_events_url,
+            timeout_seconds=max(settings.http_timeout_seconds, 45.0),
+        )
+        self.deadlock_broadcast_urls = BroadcastURLRepository(settings.database_path)
+        self.deadlock_service = DeadlockService(
+            self.deadlock_client,
+            self.deadlock_live_client,
+            self.deadlock_broadcast_urls,
+        )
+        self.ocr_provider = RapidOCRProvider()
+        self.deadlock_screenshot_reader = DeadlockScreenshotReader(self.ocr_provider)
+        self.deadlock_scout_templates = ScoutTemplateCache(
+            settings.deadlock_scout_template_path
+        )
+        self.steam_links = SteamLinkRepository(settings.database_path)
         self.quest_log_service = QuestLogService(
             self.tarkov_client,
-            RapidOCRProvider(),
+            self.ocr_provider,
         )
+        self.profit_service = ProfitService(self.tarkov_client)
 
     async def setup_hook(self) -> None:
+        await self.steam_links.initialize()
+        await self.deadlock_broadcast_urls.initialize()
+        await self.add_cog(SteamCog(self, self.steam_links))
         await self.add_cog(
-            TarkovCog(self, self.tarkov_service, self.quest_log_service)
+            DeadlockCog(
+                self,
+                self.deadlock_service,
+                self.steam_links,
+                self.deadlock_screenshot_reader,
+                self.deadlock_scout_templates,
+            )
+        )
+        await self.add_cog(
+            TarkovCog(
+                self,
+                self.tarkov_service,
+                self.quest_log_service,
+                self.profit_service,
+            )
         )
         if self.settings.discord_guild_id is not None:
             guild = discord.Object(id=self.settings.discord_guild_id)
@@ -45,6 +90,8 @@ class DuckiesBot(commands.Bot):
 
     async def close(self) -> None:
         await self.tarkov_client.close()
+        await self.deadlock_client.close()
+        await self.deadlock_live_client.close()
         await super().close()
 
     async def on_ready(self) -> None:

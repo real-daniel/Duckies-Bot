@@ -45,6 +45,16 @@ def raw_item(
         "sellToTrader": [
             {"priceRUB": 494_700, "trader": THERAPIST_ID},
         ],
+        "buyFromTrader": [
+            {
+                "priceRUB": 500_000,
+                "trader": THERAPIST_ID,
+                "minTraderLevel": 4,
+                "buyLimit": 1,
+                "restockAmount": 10,
+                "taskUnlock": "task-id",
+            }
+        ],
     }
 
 
@@ -64,7 +74,16 @@ def documents(items: dict[str, Any] | None = None) -> dict[str, Any]:
             }
         },
         "/pve/traders": {
-            "data": {THERAPIST_ID: {"id": THERAPIST_ID, "name": TRADER_NAME_KEY}}
+            "data": {
+                THERAPIST_ID: {
+                    "id": THERAPIST_ID,
+                    "name": TRADER_NAME_KEY,
+                    "levels": [
+                        {"level": 1, "requiredPlayerLevel": 0},
+                        {"level": 4, "requiredPlayerLevel": 35},
+                    ],
+                }
+            }
         },
         "/pve/traders_en": {"data": {TRADER_NAME_KEY: "Therapist"}},
         "/pve/tasks": {
@@ -271,6 +290,16 @@ class TarkovClientTests(unittest.IsolatedAsyncioTestCase):
         tasks = await TarkovClient(session=FakeSession(documents())).list_tasks()
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].name, "Private Clinic")
+
+    async def test_lists_trader_to_flea_flip_candidates(self) -> None:
+        flips = await TarkovClient(session=FakeSession(documents())).list_trader_flips()
+        ledx = next(flip for flip in flips if flip.item_id == LEDX_ID)
+        self.assertEqual(ledx.item_name, "LEDX Skin Transilluminator")
+        self.assertEqual(ledx.trader_name, "Therapist")
+        self.assertEqual(ledx.trader_price, 500_000)
+        self.assertEqual(ledx.min_trader_level, 4)
+        self.assertEqual(ledx.required_player_level, 35)
+        self.assertEqual(ledx.task_unlock_name, "Private Clinic")
 
     async def test_no_matching_task_raises_not_found(self) -> None:
         client = TarkovClient(session=FakeSession(documents()))

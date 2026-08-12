@@ -14,7 +14,12 @@ from .models import (
     PricedIngredient,
     ProfitRecipe,
     ProfitResult,
+    TraderFlipCandidate,
+    TraderFlipResult,
 )
+
+
+_EXCLUDED_CRAFT_SOURCES = {"bitcoin farm"}
 
 
 class ProfitProvider(Protocol):
@@ -23,6 +28,8 @@ class ProfitProvider(Protocol):
     async def list_barters(self) -> tuple[ProfitRecipe, ...]: ...
 
     async def get_price_history(self, item_id: str) -> tuple[PriceHistoryPoint, ...]: ...
+
+    async def list_trader_flips(self) -> tuple[TraderFlipCandidate, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +44,12 @@ class _RankingCacheEntry:
     expires_at: float
 
 
+@dataclass(frozen=True, slots=True)
+class _FlipCacheEntry:
+    results: tuple[TraderFlipResult, ...]
+    expires_at: float
+
+
 class ProfitService:
     def __init__(
         self,
@@ -48,12 +61,100 @@ class ProfitService:
         self._cache_ttl_seconds = cache_ttl_seconds
         self._clock = clock
         self._cache: dict[tuple[str, str], _RankingCacheEntry] = {}
+        self._flip_cache: dict[tuple[bool, int | None, bool], _FlipCacheEntry] = {}
 
     async def top_crafts(self, top: int, sort_by: str = "profit") -> tuple[ProfitResult, ...]:
         return await self._rank("craft", top, sort_by)
 
     async def top_barters(self, top: int) -> tuple[ProfitResult, ...]:
         return await self._rank("barter", top, "profit")
+
+    async def top_flips(
+        self,
+        top: int,
+        include_task_locked: bool = False,
+        pmc_level: int | None = None,
+        high_liquidity_only: bool = False,
+    ) -> tuple[TraderFlipResult, ...]:
+        if not 1 <= top <= 20:
+            raise ValueError("top must be between 1 and 20")
+        if pmc_level is not None and not 1 <= pmc_level <= 100:
+            raise ValueError("pmc_level must be between 1 and 100")
+        now = self._clock()
+        cache_key = (include_task_locked, pmc_level, high_liquidity_only)
+        cache = self._flip_cache.get(cache_key)
+        if (
+            cache is not None
+            and cache.expires_at > now
+            and len(cache.results) >= top
+        ):
+            return cache.results[:top]
+
+        candidates = await self._provider.list_trader_flips()
+        cheapest_by_item: dict[str, TraderFlipCandidate] = {}
+        for candidate in candidates:
+            if not include_task_locked and candidate.task_unlock_name:
+                continue
+            if (
+                pmc_level is not None
+                and candidate.required_player_level is not None
+                and candidate.required_player_level > pmc_level
+            ):
+                continue
+            existing = cheapest_by_item.get(candidate.item_id)
+            if existing is None or candidate.trader_price < existing.trader_price:
+                cheapest_by_item[candidate.item_id] = candidate
+
+        preliminary = sorted(
+            (
+                candidate
+                for candidate in cheapest_by_item.values()
+                if candidate.snapshot_flea_price > candidate.trader_price
+            ),
+            key=lambda candidate: candidate.snapshot_flea_price - candidate.trader_price,
+            reverse=True,
+        )
+        candidate_pool_size = max(200, top * 20) if high_liquidity_only else max(100, top * 10)
+        candidate_limit = min(len(preliminary), candidate_pool_size)
+        finalists = preliminary[:candidate_limit]
+        robust_prices = await self._load_robust_prices(
+            {candidate.item_id for candidate in finalists}
+        )
+        results: list[TraderFlipResult] = []
+        for candidate in finalists:
+            robust = robust_prices.get(candidate.item_id)
+            if robust is None:
+                continue
+            if high_liquidity_only and robust.low_liquidity:
+                continue
+            flea_price = robust.value
+            gross_profit = flea_price - candidate.trader_price
+            if gross_profit <= 0:
+                continue
+            results.append(
+                TraderFlipResult(
+                    item_name=candidate.item_name,
+                    trader_name=candidate.trader_name,
+                    trader_price=candidate.trader_price,
+                    flea_price=flea_price,
+                    price_source="Recent flea floor",
+                    gross_profit_each=gross_profit,
+                    roi_percent=gross_profit / candidate.trader_price * 100,
+                    min_trader_level=candidate.min_trader_level,
+                    required_player_level=candidate.required_player_level,
+                    task_unlock_name=candidate.task_unlock_name,
+                    buy_limit=candidate.buy_limit,
+                    restock_amount=candidate.restock_amount,
+                    low_liquidity=robust.low_liquidity,
+                )
+            )
+        results.sort(key=lambda result: result.gross_profit_each, reverse=True)
+        ranked = tuple(results)
+        self._flip_cache[cache_key] = _FlipCacheEntry(
+            ranked,
+            self._clock() + self._cache_ttl_seconds,
+        )
+        return ranked[:top]
 
     async def _rank(
         self,
@@ -77,6 +178,12 @@ class ProfitService:
             if recipe_type == "craft"
             else await self._provider.list_barters()
         )
+        if recipe_type == "craft":
+            recipes = tuple(
+                recipe
+                for recipe in recipes
+                if recipe.source_name.casefold() not in _EXCLUDED_CRAFT_SOURCES
+            )
         preliminary = [
             result
             for recipe in recipes
@@ -87,14 +194,15 @@ class ProfitService:
         candidate_ids = {result.recipe_id for result in preliminary[:candidate_limit]}
         candidates = [recipe for recipe in recipes if recipe.id in candidate_ids]
 
-        item_ids = {
-            item_id
-            for recipe in candidates
-            for item_id in (
-                recipe.result_item_id,
-                *(ingredient.item_id for ingredient in recipe.ingredients),
+        item_ids: set[str] = set()
+        for recipe in candidates:
+            if recipe.result_snapshot_flea_price is not None:
+                item_ids.add(recipe.result_item_id)
+            item_ids.update(
+                ingredient.item_id
+                for ingredient in recipe.ingredients
+                if ingredient.snapshot_flea_price is not None
             )
-        }
         robust_prices = await self._load_robust_prices(item_ids)
         results = [
             result

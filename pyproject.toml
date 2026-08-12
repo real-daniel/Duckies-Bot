@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv>=1.0,<2",
     "rapidocr>=3.9,<4",
     "onnxruntime>=1.22,<2",
+    "Pillow>=10,<12",
 ]
 
 [tool.setuptools]

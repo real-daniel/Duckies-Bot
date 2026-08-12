@@ -4,6 +4,8 @@ import unittest
 
 from duckies_bot.features.tarkov.formatter import (
     build_item_embed,
+    build_flip_embeds,
+    build_profit_embeds,
     build_quest_log_embeds,
     build_server_status_embed,
     build_task_embeds,
@@ -15,6 +17,8 @@ from duckies_bot.features.tarkov.models import (
     QuestLogMapGroup,
     QuestLogMatch,
     QuestLogSummary,
+    PricedIngredient,
+    ProfitResult,
     ServerComponentStatus,
     ServerStatusMessage,
     TarkovItem,
@@ -25,6 +29,7 @@ from duckies_bot.features.tarkov.models import (
     TaskObjective,
     TaskRewardItem,
     TaskRewards,
+    TraderFlipResult,
     VendorPrice,
 )
 
@@ -64,6 +69,10 @@ def sample_task() -> TarkovTask:
     )
 
 
+def field_value(embed, label: str) -> str:
+    return next(field.value for field in embed.fields if label.casefold() in field.name.casefold())
+
+
 class TarkovFormatterTests(unittest.TestCase):
     def test_format_roubles(self) -> None:
         self.assertEqual(format_roubles(1_250_000), "1,250,000 ₽")
@@ -83,41 +92,36 @@ class TarkovFormatterTests(unittest.TestCase):
             tuple(f"Task {number}" for number in range(7)),
         )
         embed = build_item_embed(item)
-        fields = {field.name: field.value for field in embed.fields}
-        self.assertEqual(embed.title, item.name)
+        self.assertIn(item.name, embed.title)
         self.assertEqual(embed.thumbnail.url, item.icon_url)
-        self.assertIn("1,000,000 ₽", fields["24h average"])
-        self.assertIn("Therapist", fields["Best trader"])
-        self.assertIn("and 2 more", fields["Needed for tasks"])
-        self.assertLessEqual(len(fields["Needed for tasks"]), 1024)
+        self.assertIn("1,000,000 ₽", field_value(embed, "24h average"))
+        self.assertIn("Therapist", field_value(embed, "Best trader"))
+        self.assertIn("and 2 more", field_value(embed, "Task uses"))
+        self.assertLessEqual(len(field_value(embed, "Task uses")), 1024)
 
     def test_embed_handles_all_missing_values(self) -> None:
         item = TarkovItem("id", "Unknown", None, None, None, None, None, None, (), ())
         embed = build_item_embed(item)
-        fields = {field.name: field.value for field in embed.fields}
-        self.assertEqual(fields["24h average"], "Unavailable")
-        self.assertEqual(fields["Best trader"], "No trader offer available")
-        self.assertEqual(fields["Needed for tasks"], "Not currently required for a task")
+        self.assertIn("Unavailable", field_value(embed, "24h average"))
+        self.assertEqual(field_value(embed, "Best trader"), "No trader offer available")
+        self.assertEqual(field_value(embed, "Task uses"), "Not currently required for a task")
 
     def test_quick_task_embed_prioritizes_raid_prep(self) -> None:
         embeds = build_task_embeds(sample_task())
         self.assertEqual(len(embeds), 1)
-        fields = {field.name: field.value for field in embeds[0].fields}
-        self.assertIn("LEDX", fields["Bring / collect"])
-        self.assertIn("Found in Raid", fields["Bring / collect"])
-        self.assertIn("West 301 key", fields["Required keys"])
-        self.assertIn("tarkov.dev/map/shoreline", fields["Maps"])
-        self.assertIn("30,600 XP", fields["Completion rewards"])
+        self.assertIn("LEDX", field_value(embeds[0], "Bring / collect"))
+        self.assertIn("Found in Raid", field_value(embeds[0], "Bring / collect"))
+        self.assertIn("West 301 key", field_value(embeds[0], "Required keys"))
+        self.assertIn("tarkov.dev/map/shoreline", field_value(embeds[0], "Maps"))
+        self.assertIn("30,600 XP", field_value(embeds[0], "Completion rewards"))
 
     def test_detailed_task_embeds_expand_objectives_and_rewards(self) -> None:
         embeds = build_task_embeds(sample_task(), detailed=True)
         self.assertEqual(len(embeds), 3)
-        objective_fields = {field.name: field.value for field in embeds[1].fields}
-        self.assertIn("1. findItem", objective_fields)
-        self.assertIn("Optional", objective_fields["2. visit"])
-        reward_fields = {field.name: field.value for field in embeds[2].fields}
-        self.assertIn("130000× Roubles", reward_fields["On completion"])
-        self.assertIn("Therapist +0.05", reward_fields["On completion"])
+        self.assertIn("Find Item", embeds[1].fields[0].name)
+        self.assertIn("Optional", embeds[1].fields[1].value)
+        self.assertIn("130000× Roubles", field_value(embeds[2], "On completion"))
+        self.assertIn("Therapist +0.05", field_value(embeds[2], "On completion"))
 
     def test_quest_log_embeds_show_combined_prep_maps_and_uncertain_text(self) -> None:
         task = sample_task()
@@ -162,9 +166,47 @@ class TarkovFormatterTests(unittest.TestCase):
             ),
         )
         embed = build_server_status_embed(status)
-        fields = {field.name: field.value for field in embed.fields}
-        self.assertIn("Unstable", embed.description)
-        self.assertIn("Authentication", fields["Components"])
-        self.assertIn("Long queues", fields["Components"])
-        self.assertIn("Investigating delays", fields["Active incidents"])
-        self.assertIn("No load", embed.footer.text)
+        self.assertIn("UNSTABLE", embed.description)
+        self.assertIn("Authentication", field_value(embed, "Services"))
+        self.assertIn("Long queues", field_value(embed, "Services"))
+        self.assertIn("Investigating delays", field_value(embed, "Active incidents"))
+        self.assertIn("does not expose load", field_value(embed, "Coverage"))
+
+    def test_profit_embed_labels_gross_values_and_reusable_tools(self) -> None:
+        result = ProfitResult(
+            "recipe", "craft", "Ammo", 60, 1000, 60000, "Recent flea floor",
+            (
+                PricedIngredient("Gunpowder", 2, 10000, 20000, False),
+                PricedIngredient("Multitool", 1, 30000, 30000, True),
+            ),
+            20000, 30000, 40000, 200.0, 20000, "Workbench", 3, None,
+            7200, None, (),
+        )
+        embeds = build_profit_embeds((result,), "craft", "hourly")
+        rendered = str([embed.to_dict() for embed in embeds])
+        self.assertIn("40,000 ₽", rendered)
+        self.assertIn("reusable capital", rendered)
+        self.assertIn("Multitool (tool)", rendered)
+        self.assertIn("exclude flea fees", embeds[0].description)
+
+    def test_flip_embed_shows_spread_limit_and_task_requirement(self) -> None:
+        result = TraderFlipResult(
+            "Flip item", "Mechanic", 50_000, 100_000, "Recent flea floor",
+            50_000, 100.0, 3, 30, "Required Task", 2, 100, False,
+        )
+        embeds = build_flip_embeds((result,))
+        rendered = str([embed.to_dict() for embed in embeds])
+        self.assertIn("50,000 ₽ gross each", rendered)
+        self.assertIn("Mechanic LL3", rendered)
+        self.assertIn("MAX GROSS", rendered)
+        self.assertIn("Required Task", rendered)
+        self.assertNotIn("author", embeds[0].to_dict())
+
+    def test_all_embed_families_share_the_minimal_visual_style(self) -> None:
+        item_embed = build_item_embed(
+            TarkovItem("id", "LEDX", None, None, None, None, None, None, (), ())
+        )
+        task_embed = build_task_embeds(sample_task())[0]
+        for embed in (item_embed, task_embed):
+            self.assertIsNone(embed.author.name)
+            self.assertIn("json.tarkov.dev", embed.footer.text)

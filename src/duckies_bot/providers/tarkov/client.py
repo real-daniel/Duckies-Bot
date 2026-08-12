@@ -25,6 +25,7 @@ from ...features.tarkov.models import (
     TaskObjective,
     TaskRewardItem,
     TaskRewards,
+    TraderFlipCandidate,
     VendorPrice,
 )
 from .errors import (
@@ -59,6 +60,7 @@ class _Dataset:
     item_translations: Mapping[str, str]
     item_names: Mapping[str, str]
     trader_names: Mapping[str, str]
+    trader_level_requirements: Mapping[str, Mapping[int, int]]
     item_task_names: Mapping[str, tuple[str, ...]]
     tasks: tuple[Mapping[str, Any], ...]
     task_translations: Mapping[str, str]
@@ -232,6 +234,61 @@ class TarkovClient:
                 )
         return tuple(points)
 
+    async def list_trader_flips(self) -> tuple[TraderFlipCandidate, ...]:
+        dataset = await self._get_dataset()
+        candidates: dict[tuple[str, str, int, str | None], TraderFlipCandidate] = {}
+        for item_id, item in dataset.items_by_id.items():
+            flea_price = _snapshot_flea_price(item)
+            item_types = item.get("types") or []
+            if flea_price is None or "noFlea" in item_types:
+                continue
+            for offer in item.get("buyFromTrader") or []:
+                if not isinstance(offer, Mapping):
+                    continue
+                trader_id = offer.get("trader")
+                trader_price = offer.get("priceRUB")
+                if (
+                    not isinstance(trader_id, str)
+                    or not isinstance(trader_price, int)
+                    or isinstance(trader_price, bool)
+                    or trader_price <= 0
+                ):
+                    continue
+                task_unlock = offer.get("taskUnlock")
+                min_trader_level = _safe_optional_int(offer.get("minTraderLevel"))
+                candidate = TraderFlipCandidate(
+                    item_id=item_id,
+                    item_name=dataset.item_names.get(item_id, item_id),
+                    trader_name=dataset.trader_names.get(trader_id, trader_id),
+                    trader_price=trader_price,
+                    snapshot_flea_price=flea_price,
+                    min_trader_level=min_trader_level,
+                    required_player_level=(
+                        dataset.trader_level_requirements.get(trader_id, {}).get(
+                            min_trader_level
+                        )
+                        if min_trader_level is not None
+                        else None
+                    ),
+                    task_unlock_name=(
+                        dataset.task_names.get(task_unlock, task_unlock)
+                        if isinstance(task_unlock, str)
+                        else None
+                    ),
+                    buy_limit=_safe_optional_int(offer.get("buyLimit")),
+                    restock_amount=_safe_optional_int(offer.get("restockAmount")),
+                )
+                key = (
+                    item_id,
+                    trader_id,
+                    min_trader_level or 0,
+                    task_unlock if isinstance(task_unlock, str) else None,
+                )
+                existing = candidates.get(key)
+                if existing is None or candidate.trader_price < existing.trader_price:
+                    candidates[key] = candidate
+        return tuple(candidates.values())
+
     async def _get_dataset(self) -> _Dataset:
         now = self._clock()
         cache = self._dataset_cache
@@ -305,6 +362,7 @@ class TarkovClient:
             item_translations=item_translations,
             item_names=item_names,
             trader_names=_build_trader_names(raw_traders, trader_translations),
+            trader_level_requirements=_build_trader_level_requirements(raw_traders),
             item_task_names=_build_item_task_names(raw_tasks, task_translations),
             tasks=tasks,
             task_translations=task_translations,
@@ -601,6 +659,25 @@ def _build_trader_names(
         if name:
             names[trader_id] = name
     return names
+
+
+def _build_trader_level_requirements(
+    traders: Mapping[str, Any],
+) -> Mapping[str, Mapping[int, int]]:
+    requirements: dict[str, dict[int, int]] = {}
+    for trader_id, trader in traders.items():
+        if not isinstance(trader_id, str) or not isinstance(trader, Mapping):
+            continue
+        levels: dict[int, int] = {}
+        for raw_level in trader.get("levels") or []:
+            if not isinstance(raw_level, Mapping):
+                continue
+            level = _safe_optional_int(raw_level.get("level"))
+            player_level = _safe_optional_int(raw_level.get("requiredPlayerLevel"))
+            if level is not None and player_level is not None:
+                levels[level] = player_level
+        requirements[trader_id] = levels
+    return requirements
 
 
 def _build_localized_names(
@@ -947,6 +1024,10 @@ def _optional_int(value: Any, field_name: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise InvalidTarkovResponseError(f"{field_name} was not an integer or null")
     return value
+
+
+def _safe_optional_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _optional_number(value: Any, field_name: str) -> float | None:
