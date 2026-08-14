@@ -41,10 +41,14 @@ class HeroSummary:
 
 
 @dataclass(frozen=True, slots=True)
-class LiveLookup:
-    match: ActiveMatch
-    player: ActivePlayer
-    hero: HeroSummary | None
+class ItemSummary:
+    item_id: int
+    name: str
+    icon_url: str | None
+    slot_type: str | None
+    tier: int | None
+    cost: int | None
+    shopable: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +62,17 @@ class LivePlayer:
     deaths: int
     assists: int
     net_worth: int
+    assigned_lane: int | None = None
+    denies: int = 0
+    last_hits: int = 0
+    hero_healing: int = 0
+    self_healing: int = 0
+    hero_damage: int = 0
+    objective_damage: int = 0
+    health_regen: float | None = None
+    ultimate_trained: bool | None = None
+    ultimate_cooldown_end: float | None = None
+    upgrades: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,16 +85,37 @@ class LiveChatMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class LiveKillEvent:
+    tick: int | None
+    game_time_seconds: float | None
+    attacker_account_id: int | None
+    victim_account_id: int | None
+    assister_account_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class LiveMatchSnapshot:
     match_id: int
     game_time_seconds: float | None
     players: tuple[LivePlayer, ...]
     heroes: tuple[HeroSummary, ...] = ()
+    items: tuple[ItemSummary, ...] = ()
+    kill_events: tuple[LiveKillEvent, ...] = ()
 
     def hero(self, hero_id: int | None) -> HeroSummary | None:
         if hero_id is None:
             return None
         return next((hero for hero in self.heroes if hero.hero_id == hero_id), None)
+
+    def item(self, item_id: int) -> ItemSummary | None:
+        return next((item for item in self.items if item.item_id == item_id), None)
+
+    def inventory(self, player: LivePlayer) -> tuple[ItemSummary, ...]:
+        return tuple(
+            item
+            for item_id in player.upgrades
+            if (item := self.item(item_id)) is not None and item.shopable
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +152,12 @@ class PlayerHistory:
 
 
 @dataclass(frozen=True, slots=True)
+class HeroRecord:
+    experience: HeroExperience
+    hero: HeroSummary | None
+
+
+@dataclass(frozen=True, slots=True)
 class ScoutedPlayer:
     player: LivePlayer
     hero: HeroSummary | None
@@ -123,6 +165,18 @@ class ScoutedPlayer:
     rank_name: str | None
     experience: HeroExperience | None
     recent_outcomes: tuple[str, ...]
+    total_matches: int | None = None
+    top_heroes: tuple[HeroRecord, ...] = ()
+
+    @property
+    def hero_match_share(self) -> float | None:
+        if (
+            self.experience is None
+            or self.total_matches is None
+            or self.total_matches <= 0
+        ):
+            return None
+        return self.experience.matches_played / self.total_matches
 
 
 @dataclass(frozen=True, slots=True)

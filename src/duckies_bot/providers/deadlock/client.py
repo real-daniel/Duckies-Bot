@@ -12,6 +12,7 @@ from ...features.deadlock.models import (
     ActivePlayer,
     HeroExperience,
     HeroSummary,
+    ItemSummary,
     PlayerHistory,
     PlayerRank,
     RankAsset,
@@ -89,6 +90,43 @@ class DeadlockClient:
                 heroes.append(_parse_hero(raw))
         return tuple(heroes)
 
+    async def get_items(self) -> tuple[ItemSummary, ...]:
+        document = await self._get_json("/v1/assets/items")
+        if not isinstance(document, list):
+            raise InvalidDeadlockResponseError()
+        items: list[ItemSummary] = []
+        for raw in document:
+            if not isinstance(raw, Mapping):
+                continue
+            item = _parse_item(raw)
+            if item is not None:
+                items.append(item)
+        return tuple(items)
+
+    async def get_asset_bytes(self, url: str, *, max_bytes: int = 2 * 1024 * 1024) -> bytes:
+        """Download a small image asset referenced by the asset catalog."""
+        if not url.startswith(("https://", "http://")):
+            raise ValueError("asset URL must use HTTP or HTTPS")
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        session = await self._get_session()
+        try:
+            async with session.get(
+                url,
+                headers={"Accept": "image/*"},
+                timeout=aiohttp.ClientTimeout(total=self.timeout_seconds),
+            ) as response:
+                if response.status >= 400:
+                    raise DeadlockAPIError("A Deadlock image asset could not be downloaded.")
+                payload = await response.read()
+                if not payload or len(payload) > max_bytes:
+                    raise DeadlockAPIError("A Deadlock image asset was invalid or too large.")
+                return payload
+        except TimeoutError as exc:
+            raise DeadlockAPIError("A Deadlock image asset timed out.") from exc
+        except aiohttp.ClientError as exc:
+            raise DeadlockAPIError("A Deadlock image asset could not be downloaded.") from exc
+
     async def get_player_rank(self, account_id: int) -> PlayerRank:
         document = await self._get_json(f"/v1/players/{account_id}/rank")
         if not isinstance(document, Mapping):
@@ -127,12 +165,13 @@ class DeadlockClient:
     async def get_hero_experience(
         self,
         account_ids: Sequence[int],
-        hero_ids: Sequence[int],
+        hero_ids: Sequence[int] | None = None,
     ) -> tuple[HeroExperience, ...]:
-        if not account_ids or not hero_ids:
+        if not account_ids:
             return ()
         params = [*(('account_ids', str(value)) for value in sorted(set(account_ids)))]
-        params.append(("hero_ids", ",".join(str(value) for value in sorted(set(hero_ids)))))
+        if hero_ids:
+            params.append(("hero_ids", ",".join(str(value) for value in sorted(set(hero_ids)))))
         document = await self._get_json("/v1/players/hero-stats", params=params)
         if not isinstance(document, list):
             raise InvalidDeadlockResponseError()
@@ -226,6 +265,28 @@ def _parse_hero(document: Mapping[str, Any]) -> HeroSummary:
             images.get("icon_image_small")
         )
     return HeroSummary(returned_id, name, icon_url)
+
+
+def _parse_item(document: Mapping[str, Any]) -> ItemSummary | None:
+    item_id = _optional_int(document.get("id"))
+    name = _optional_str(document.get("name"))
+    if item_id is None or name is None:
+        return None
+    icon_url = (
+        _optional_str(document.get("shop_image_webp"))
+        or _optional_str(document.get("image_webp"))
+        or _optional_str(document.get("shop_image"))
+        or _optional_str(document.get("image"))
+    )
+    return ItemSummary(
+        item_id=item_id,
+        name=name,
+        icon_url=icon_url,
+        slot_type=_optional_str(document.get("item_slot_type")),
+        tier=_optional_int(document.get("item_tier")),
+        cost=_optional_int(document.get("cost")),
+        shopable=document.get("shopable") is True,
+    )
 
 
 def _parse_active_match(raw: Mapping[str, Any]) -> ActiveMatch:

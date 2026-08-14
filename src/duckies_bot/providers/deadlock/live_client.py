@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 import aiohttp
 
-from ...features.deadlock.models import LiveChatMessage, LiveMatchSnapshot, LivePlayer
+from ...features.deadlock.models import (
+    LiveChatMessage,
+    LiveKillEvent,
+    LiveMatchSnapshot,
+    LivePlayer,
+)
 from .errors import DeadlockAPIError, InvalidDeadlockResponseError
 
 
@@ -31,6 +37,26 @@ class DeadlockLiveClient:
         match_id: int,
         broadcast_url: str,
     ) -> LiveMatchSnapshot:
+        snapshots = self.stream_match_snapshots(match_id, broadcast_url)
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                return await anext(snapshots)
+        except TimeoutError as exc:
+            raise DeadlockAPIError(
+                "The live broadcast did not produce player data before timing out."
+            ) from exc
+        except StopAsyncIteration as exc:
+            raise DeadlockAPIError(
+                "The live broadcast ended without returning player data."
+            ) from exc
+        finally:
+            await snapshots.aclose()
+
+    async def stream_match_snapshots(
+        self,
+        match_id: int,
+        broadcast_url: str,
+    ) -> AsyncIterator[LiveMatchSnapshot]:
         if match_id <= 0:
             raise ValueError("match_id must be positive")
         if not broadcast_url:
@@ -38,9 +64,17 @@ class DeadlockLiveClient:
 
         session = await self._get_session()
         url = f"{self.base_url}/v1/live/demo/events"
-        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        timeout = aiohttp.ClientTimeout(
+            total=None,
+            sock_connect=self.timeout_seconds,
+            sock_read=None,
+        )
         players: dict[int, LivePlayer] = {}
+        pawn_accounts: dict[int, int] = {}
+        controller_accounts: dict[int, int] = {}
         game_time: float | None = None
+        roster_ready = False
+        last_snapshot: LiveMatchSnapshot | None = None
 
         try:
             async with session.get(
@@ -64,6 +98,44 @@ class DeadlockLiveClient:
                     raise DeadlockAPIError("The live broadcast could not be read yet.")
 
                 async for event_name, data in _iter_sse(response.content):
+                    if event_name == "end":
+                        return
+                    if event_name == "hero_killed":
+                        try:
+                            raw = json.loads(data)
+                        except (TypeError, json.JSONDecodeError) as exc:
+                            raise InvalidDeadlockResponseError() from exc
+                        if not isinstance(raw, Mapping) or not roster_ready:
+                            continue
+                        kill_event = _parse_live_kill_event(
+                            raw,
+                            pawn_accounts,
+                            controller_accounts,
+                        )
+                        if kill_event is None:
+                            continue
+                        snapshot = LiveMatchSnapshot(
+                            match_id=match_id,
+                            game_time_seconds=_event_game_time(raw, game_time),
+                            players=tuple(sorted(players.values(), key=_player_sort_key)),
+                            kill_events=(kill_event,),
+                        )
+                        if snapshot != last_snapshot:
+                            last_snapshot = snapshot
+                            yield snapshot
+                        continue
+                    if event_name == "tick_end":
+                        if players and not roster_ready:
+                            roster_ready = True
+                            snapshot = LiveMatchSnapshot(
+                                match_id=match_id,
+                                game_time_seconds=game_time,
+                                players=tuple(sorted(players.values(), key=_player_sort_key)),
+                            )
+                            if snapshot != last_snapshot:
+                                last_snapshot = snapshot
+                                yield snapshot
+                        continue
                     if not event_name.startswith("player_controller_entity_"):
                         continue
                     try:
@@ -72,53 +144,40 @@ class DeadlockLiveClient:
                         raise InvalidDeadlockResponseError() from exc
                     if not isinstance(raw, Mapping):
                         continue
-                    player = _parse_live_player(raw)
+                    account_id = _optional_int(raw.get("steam_id"))
+                    player = _parse_live_player(
+                        raw,
+                        players.get(account_id) if account_id is not None else None,
+                    )
                     if player is None:
                         continue
                     players[player.account_id] = player
+                    pawn_index = _optional_int(raw.get("pawn"))
+                    if pawn_index is not None and pawn_index >= 0:
+                        pawn_accounts[pawn_index] = player.account_id
+                    controller_index = _optional_int(raw.get("entity_index"))
+                    if controller_index is not None and controller_index >= 0:
+                        controller_accounts[controller_index] = player.account_id
                     raw_game_time = raw.get("game_time")
                     if isinstance(raw_game_time, (int, float)) and not isinstance(raw_game_time, bool):
                         game_time = float(raw_game_time)
 
-                    # Standard Deadlock matches have player slots 1-12. Waiting for
-                    # all slots avoids returning a partially received initial snapshot.
                     slots = {item.player_slot for item in players.values()}
-                    if set(range(1, 13)).issubset(slots):
-                        return LiveMatchSnapshot(
-                            match_id=match_id,
-                            game_time_seconds=game_time,
-                            players=tuple(sorted(players.values(), key=_player_sort_key)),
-                        )
-                    # Controller creates are emitted as one initial batch. Its first
-                    # update marks a complete roster, including smaller game modes.
-                    if event_name.endswith("_update") and players:
-                        return LiveMatchSnapshot(
-                            match_id=match_id,
-                            game_time_seconds=game_time,
-                            players=tuple(sorted(players.values(), key=_player_sort_key)),
-                        )
-        except TimeoutError as exc:
-            if players:
-                return LiveMatchSnapshot(
-                    match_id=match_id,
-                    game_time_seconds=game_time,
-                    players=tuple(sorted(players.values(), key=_player_sort_key)),
-                )
-            raise DeadlockAPIError(
-                "The live broadcast did not produce player data before timing out."
-            ) from exc
+                    roster_ready = roster_ready or set(range(1, 13)).issubset(slots)
+                    if not roster_ready:
+                        continue
+                    snapshot = LiveMatchSnapshot(
+                        match_id=match_id,
+                        game_time_seconds=game_time,
+                        players=tuple(sorted(players.values(), key=_player_sort_key)),
+                    )
+                    if snapshot != last_snapshot:
+                        last_snapshot = snapshot
+                        yield snapshot
         except aiohttp.ClientError as exc:
             raise DeadlockAPIError(
                 "Could not reach the Deadlock live parser. Make sure its Docker service is running."
             ) from exc
-
-        if not players:
-            raise DeadlockAPIError("The live broadcast ended without returning player data.")
-        return LiveMatchSnapshot(
-            match_id=match_id,
-            game_time_seconds=game_time,
-            players=tuple(sorted(players.values(), key=_player_sort_key)),
-        )
 
     async def stream_chat_messages(
         self,
@@ -184,6 +243,51 @@ class DeadlockLiveClient:
             await self._session.close()
 
 
+def _parse_live_kill_event(
+    raw: Mapping[str, Any],
+    pawn_accounts: Mapping[int, int],
+    controller_accounts: Mapping[int, int],
+) -> LiveKillEvent | None:
+    victim_entity = _optional_int(raw.get("entindex_victim"))
+    if victim_entity is None or victim_entity < 0:
+        return None
+
+    def account(entity_index: int | None) -> int | None:
+        if entity_index is None or entity_index < 0:
+            return None
+        return pawn_accounts.get(entity_index) or controller_accounts.get(entity_index)
+
+    scorer = account(_optional_int(raw.get("entindex_scorer")))
+    attacker = account(_optional_int(raw.get("entindex_attacker")))
+    assister_entities = raw.get("entindex_assisters")
+    assisters = (
+        tuple(
+            account_id
+            for entity_index in assister_entities
+            if (account_id := account(_optional_int(entity_index))) is not None
+        )
+        if isinstance(assister_entities, list)
+        else ()
+    )
+    return LiveKillEvent(
+        tick=_optional_int(raw.get("tick")),
+        game_time_seconds=_event_game_time(raw, None),
+        attacker_account_id=scorer or attacker,
+        victim_account_id=account(victim_entity),
+        assister_account_ids=assisters,
+    )
+
+
+def _event_game_time(
+    raw: Mapping[str, Any],
+    fallback: float | None,
+) -> float | None:
+    value = raw.get("game_time")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return fallback
+
+
 async def _iter_sse(content: Any) -> AsyncIterator[tuple[str, str]]:
     event_name = "message"
     data_lines: list[str] = []
@@ -202,22 +306,80 @@ async def _iter_sse(content: Any) -> AsyncIterator[tuple[str, str]]:
         yield event_name, "\n".join(data_lines)
 
 
-def _parse_live_player(raw: Mapping[str, Any]) -> LivePlayer | None:
+def _parse_live_player(
+    raw: Mapping[str, Any],
+    previous: LivePlayer | None = None,
+) -> LivePlayer | None:
     account_id = _optional_int(raw.get("steam_id"))
     steam_name = raw.get("steam_name")
-    if account_id is None or account_id <= 0 or not isinstance(steam_name, str):
+    if account_id is None or account_id <= 0:
         # The parser also emits a steam_id=0 SourceTV controller.
         return None
+    if not isinstance(steam_name, str):
+        steam_name = previous.steam_name if previous is not None else None
+    if steam_name is None:
+        return None
+
+    def current_int(key: str, fallback: int | None = None) -> int | None:
+        value = _optional_int(raw.get(key))
+        return value if value is not None else fallback
+
+    def current_number(key: str, fallback: float | None = None) -> float | None:
+        value = raw.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return fallback
+
+    def current_bool(key: str, fallback: bool | None = None) -> bool | None:
+        value = raw.get(key)
+        return value if isinstance(value, bool) else fallback
+
+    if "upgrades" in raw:
+        # The live feed sends the complete current inventory, not a delta. An
+        # explicitly empty list therefore clears the inventory, while an
+        # omitted field means this partial entity update did not change it.
+        upgrades = _int_tuple(raw.get("upgrades"))
+    else:
+        upgrades = previous.upgrades if previous is not None else ()
+
     return LivePlayer(
         account_id=account_id,
         steam_name=steam_name or f"Account {account_id}",
-        hero_id=_optional_int(raw.get("hero_id")),
-        team=_optional_int(raw.get("team")),
-        player_slot=_optional_int(raw.get("player_slot")),
-        kills=_optional_int(raw.get("kills")) or 0,
-        deaths=_optional_int(raw.get("deaths")) or 0,
-        assists=_optional_int(raw.get("assists")) or 0,
-        net_worth=_optional_int(raw.get("net_worth")) or 0,
+        hero_id=current_int("hero_id", previous.hero_id if previous else None),
+        team=current_int("team", previous.team if previous else None),
+        player_slot=current_int("player_slot", previous.player_slot if previous else None),
+        kills=current_int("kills", previous.kills if previous else 0) or 0,
+        deaths=current_int("deaths", previous.deaths if previous else 0) or 0,
+        assists=current_int("assists", previous.assists if previous else 0) or 0,
+        net_worth=current_int("net_worth", previous.net_worth if previous else 0) or 0,
+        assigned_lane=current_int(
+            "assigned_lane", previous.assigned_lane if previous else None
+        ),
+        denies=current_int("denies", previous.denies if previous else 0) or 0,
+        last_hits=current_int("last_hits", previous.last_hits if previous else 0) or 0,
+        hero_healing=current_int(
+            "hero_healing", previous.hero_healing if previous else 0
+        ) or 0,
+        self_healing=current_int(
+            "self_healing", previous.self_healing if previous else 0
+        ) or 0,
+        hero_damage=current_int(
+            "hero_damage", previous.hero_damage if previous else 0
+        ) or 0,
+        objective_damage=current_int(
+            "objective_damage", previous.objective_damage if previous else 0
+        ) or 0,
+        health_regen=current_number(
+            "health_regen", previous.health_regen if previous else None
+        ),
+        ultimate_trained=current_bool(
+            "ultimate_trained", previous.ultimate_trained if previous else None
+        ),
+        ultimate_cooldown_end=current_number(
+            "ultimate_cooldown_end",
+            previous.ultimate_cooldown_end if previous else None,
+        ),
+        upgrades=upgrades,
     )
 
 
@@ -246,6 +408,12 @@ def _player_sort_key(player: LivePlayer) -> tuple[int, int, str]:
 
 def _optional_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _int_tuple(value: Any) -> tuple[int, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(item for item in value if isinstance(item, int) and not isinstance(item, bool))
 
 
 def _clean_error_detail(text: str) -> str:

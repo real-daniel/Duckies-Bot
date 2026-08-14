@@ -11,6 +11,7 @@ from typing import Any
 
 from .models import (
     HeroExperience,
+    HeroRecord,
     HeroSummary,
     LivePlayer,
     MatchScout,
@@ -128,6 +129,27 @@ def sample_scout_template() -> MatchScout:
                 recent_outcomes=("W", "L", "W", "W", "L")
                 if index % 3
                 else ("L", "L", "W", "L", "W"),
+                total_matches=games * 4 + 20,
+                top_heroes=tuple(
+                    HeroRecord(
+                        experience=HeroExperience(
+                            account_id,
+                            candidate_hero_id,
+                            max(games - offset * 8, 1),
+                            max(round((games - offset * 8) * (0.44 + offset * 0.03)), 0),
+                            1_786_000_000 - offset,
+                        ),
+                        hero=HeroSummary(
+                            candidate_hero_id,
+                            hero_names[(index - 1 + offset) % len(hero_names)],
+                            None,
+                        ),
+                    )
+                    for offset, candidate_hero_id in enumerate(
+                        range(hero_id, hero_id + 5)
+                    )
+                    if games
+                ),
             )
         )
     return MatchScout(match_id=99_999_999, game_time_seconds=75, players=tuple(players))
@@ -178,6 +200,28 @@ def _scout_to_dict(scout: MatchScout) -> dict[str, Any]:
                     else None
                 ),
                 "recent_outcomes": list(item.recent_outcomes),
+                "total_matches": item.total_matches,
+                "top_heroes": [
+                    {
+                        "experience": {
+                            "account_id": record.experience.account_id,
+                            "hero_id": record.experience.hero_id,
+                            "matches_played": record.experience.matches_played,
+                            "wins": record.experience.wins,
+                            "last_played": record.experience.last_played,
+                        },
+                        "hero": (
+                            {
+                                "hero_id": record.hero.hero_id,
+                                "name": record.hero.name,
+                                "icon_url": record.hero.icon_url,
+                            }
+                            if record.hero
+                            else None
+                        ),
+                    }
+                    for record in item.top_heroes
+                ],
             }
             for item in scout.players
         ],
@@ -201,6 +245,14 @@ def _scout_from_dict(document: Any) -> MatchScout:
                 rank_name=raw.get("rank_name"),
                 experience=HeroExperience(**experience) if experience else None,
                 recent_outcomes=tuple(raw.get("recent_outcomes", ())),
+                total_matches=raw.get("total_matches"),
+                top_heroes=tuple(
+                    HeroRecord(
+                        experience=HeroExperience(**record["experience"]),
+                        hero=HeroSummary(**record["hero"]) if record.get("hero") else None,
+                    )
+                    for record in raw.get("top_heroes", ())
+                ),
             )
         )
     return MatchScout(

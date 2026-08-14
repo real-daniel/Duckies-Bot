@@ -2,81 +2,54 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import discord
 
 from ..accounts.steam import STEAM_ID64_OFFSET
-from .models import LiveLookup, LiveMatchSnapshot, LivePlayer, MatchScout, ScoutedPlayer
+from .models import LiveMatchSnapshot, LivePlayer, MatchScout, ScoutedPlayer
 from ...presentation import field_name, finish_embed, make_embed
-
-
-def build_live_embed(display_name: str, lookup: LiveLookup) -> discord.Embed:
-    match = lookup.match
-    player = lookup.player
-    hero_name = lookup.hero.name if lookup.hero else (
-        f"Hero {player.hero_id}" if player.hero_id is not None else "Unknown"
-    )
-    embed = make_embed(
-        f"{display_name} is in a Deadlock match",
-        f"Match `{match.match_id}` is currently listed in the active Watch feed.",
-        tone="success",
-    )
-    embed.add_field(name=field_name("Hero"), value=hero_name, inline=True)
-    embed.add_field(
-        name=field_name("Team"),
-        value=_clean_enum(player.team_name) or (
-            str(player.team) if player.team is not None else "Unknown"
-        ),
-        inline=True,
-    )
-    embed.add_field(
-        name=field_name("Elapsed"),
-        value=_duration(match.duration_seconds),
-        inline=True,
-    )
-    embed.add_field(
-        name=field_name("Mode"),
-        value=_clean_enum(match.game_mode) or _clean_enum(match.match_mode) or "Unknown",
-        inline=True,
-    )
-    embed.add_field(
-        name=field_name("Region"),
-        value=_clean_enum(match.region) or "Unknown",
-        inline=True,
-    )
-    embed.add_field(
-        name=field_name("Players"),
-        value=str(len(match.players)),
-        inline=True,
-    )
-    if match.net_worth_team_0 is not None or match.net_worth_team_1 is not None:
-        embed.add_field(
-            name=field_name("Team net worth"),
-            value=(
-                f"Team 0: {_number(match.net_worth_team_0)}\n"
-                f"Team 1: {_number(match.net_worth_team_1)}"
-            ),
-            inline=True,
-        )
-    if match.match_score is not None:
-        embed.add_field(name=field_name("Match score"), value=str(match.match_score), inline=True)
-    if match.spectators is not None:
-        embed.add_field(name=field_name("Spectators"), value=str(match.spectators), inline=True)
-    if player.abandoned:
-        embed.add_field(name=field_name("Player state"), value="Marked abandoned", inline=False)
-    if lookup.hero and lookup.hero.icon_url:
-        embed.set_thumbnail(url=lookup.hero.icon_url)
-    finish_embed(embed, "Live lookup", source="api.deadlock-api.com", context="Data")
-    return embed
 
 
 def build_live_match_embed(
     snapshot: LiveMatchSnapshot,
     highlighted_account_id: int | None = None,
+    *,
+    stream_status: str = "live",
 ) -> discord.Embed:
+    status_descriptions = {
+        "live": f"Live roster at {_duration_from_float(snapshot.game_time_seconds)} game time.",
+        "reconnecting": (
+            f"Last update at {_duration_from_float(snapshot.game_time_seconds)} game time.\n"
+            "The live feed was interrupted; reconnecting automatically."
+        ),
+        "unreachable": (
+            f"Last update at {_duration_from_float(snapshot.game_time_seconds)} game time.\n"
+            "The live feed is currently unreachable after repeated reconnection attempts."
+        ),
+        "ended": (
+            f"Final recorded state at {_duration_from_float(snapshot.game_time_seconds)} game time.\n"
+            "The match has ended."
+        ),
+    }
+    status_tones = {
+        "live": "success",
+        "reconnecting": "warning",
+        "unreachable": "danger",
+        "ended": "muted",
+    }
+    if stream_status not in status_descriptions:
+        raise ValueError(f"Unknown live stream status: {stream_status}")
+    status_titles = {
+        "live": f"Deadlock match {snapshot.match_id}",
+        "reconnecting": f"Deadlock match {snapshot.match_id} — Reconnecting",
+        "unreachable": f"Deadlock match {snapshot.match_id} — Feed unavailable",
+        "ended": f"Deadlock match {snapshot.match_id} — Ended",
+    }
     embed = make_embed(
-        f"Deadlock match {snapshot.match_id}",
-        f"Live roster at {_duration_from_float(snapshot.game_time_seconds)} game time.",
-        tone="success",
+        status_titles[stream_status],
+        status_descriptions[stream_status],
+        tone=status_tones[stream_status],
     )
     teams: dict[int | None, list[LivePlayer]] = {}
     for player in snapshot.players:
@@ -94,9 +67,219 @@ def build_live_match_embed(
         )
     finish_embed(
         embed,
-        "Live match lookup",
+        "Live match watch" if stream_status != "live" else "Live match lookup",
         source="Deadlock live-events parser",
         context="Data",
+    )
+    return embed
+
+
+def build_watch_tab_embed(
+    snapshot: LiveMatchSnapshot,
+    tab: str,
+    highlighted_account_id: int | None = None,
+    *,
+    stream_status: str = "live",
+    selected_account_id: int | None = None,
+    timeline: tuple[str, ...] = (),
+) -> discord.Embed:
+    """Render one page of the interactive live-match watch."""
+    if tab == "overview":
+        return build_live_match_embed(snapshot, highlighted_account_id, stream_status=stream_status)
+    if tab == "combat":
+        return _build_watch_team_page(snapshot, "Combat", stream_status, _combat_line)
+    if tab == "economy":
+        return _build_watch_team_page(snapshot, "Economy", stream_status, _economy_line)
+    if tab == "builds":
+        return _build_watch_team_page(snapshot, "Builds", stream_status, _build_line)
+    if tab == "timeline":
+        embed = _watch_shell(snapshot, "Timeline", stream_status)
+        embed.description += "\n\n" + (
+            "\n".join(timeline[-15:])
+            if timeline
+            else "No tracked changes have occurred since this watch started."
+        )
+        finish_embed(
+            embed,
+            "Live match watch",
+            source="Deadlock live-events parser",
+            context="Timeline begins when the Discord watch starts",
+        )
+        return embed
+    if tab == "player":
+        player = next(
+            (item for item in snapshot.players if item.account_id == selected_account_id),
+            snapshot.players[0] if snapshot.players else None,
+        )
+        return _build_watch_player_page(snapshot, player, highlighted_account_id, stream_status)
+    raise ValueError(f"Unknown watch tab: {tab}")
+
+
+def _build_watch_team_page(
+    snapshot: LiveMatchSnapshot,
+    page_name: str,
+    stream_status: str,
+    line_builder: Callable[[LiveMatchSnapshot, LivePlayer, list[LivePlayer]], str],
+) -> discord.Embed:
+    embed = _watch_shell(snapshot, page_name, stream_status)
+    teams: dict[int | None, list[LivePlayer]] = {}
+    for player in snapshot.players:
+        teams.setdefault(player.team, []).append(player)
+    for team, players in sorted(teams.items(), key=lambda item: item[0] or 99):
+        lines = [line_builder(snapshot, player, players) for player in players]
+        embed.add_field(
+            name=field_name(_team_name(team)),
+            value="\n".join(lines) or "No player data",
+            inline=False,
+        )
+    context = {
+        "Combat": "Damage and healing reported by the live controller feed",
+        "Economy": "Souls, lane farm, and rates from the current snapshot",
+        "Builds": "Raw live upgrade IDs; names can be added from the cached item asset catalog",
+    }[page_name]
+    finish_embed(
+        embed,
+        "Live match watch",
+        source="Deadlock live-events parser",
+        context=context,
+    )
+    return embed
+
+
+def _watch_shell(
+    snapshot: LiveMatchSnapshot,
+    page_name: str,
+    stream_status: str,
+) -> discord.Embed:
+    state = {
+        "live": ("success", "Live"),
+        "reconnecting": ("warning", "Reconnecting"),
+        "unreachable": ("danger", "Feed unavailable"),
+        "ended": ("muted", "Ended"),
+    }
+    if stream_status not in state:
+        raise ValueError(f"Unknown live stream status: {stream_status}")
+    tone, label = state[stream_status]
+    detail = {
+        "live": "Receiving live match updates.",
+        "reconnecting": "The feed was interrupted; reconnecting automatically.",
+        "unreachable": "The live feed is currently unreachable.",
+        "ended": "The match has ended; showing the final recorded state.",
+    }[stream_status]
+    status_suffix = "" if stream_status == "live" else f" · {label}"
+    return make_embed(
+        f"Deadlock match {snapshot.match_id} — {page_name}{status_suffix}",
+        (
+            f"**{label}** · {_duration_from_float(snapshot.game_time_seconds)} game time\n"
+            f"{detail}"
+        ),
+        tone=tone,
+    )
+
+
+def _combat_line(
+    snapshot: LiveMatchSnapshot,
+    player: LivePlayer,
+    teammates: list[LivePlayer],
+) -> str:
+    del snapshot
+    team_kills = max(sum(item.kills for item in teammates), 1)
+    participation = min((player.kills + player.assists) / team_kills, 1.0)
+    name = discord.utils.escape_markdown(player.steam_name)[:24]
+    return (
+        f"**{name}** · `{player.kills}/{player.deaths}/{player.assists}` · "
+        f"KP {participation:.0%}\n"
+        f"DMG {_compact_number(player.hero_damage)} · OBJ {_compact_number(player.objective_damage)} · "
+        f"HEAL {_compact_number(player.hero_healing)}"
+    )
+
+
+def _economy_line(
+    snapshot: LiveMatchSnapshot,
+    player: LivePlayer,
+    teammates: list[LivePlayer],
+) -> str:
+    del teammates
+    minutes = max((snapshot.game_time_seconds or 0) / 60, 1 / 60)
+    name = discord.utils.escape_markdown(player.steam_name)[:24]
+    return (
+        f"**{name}** · {_number(player.net_worth)} souls · "
+        f"{player.net_worth / minutes:,.0f}/min\n"
+        f"LH {player.last_hits:,} · Denies {player.denies:,} · Lane {player.assigned_lane or '—'}"
+    )
+
+
+def _build_line(
+    snapshot: LiveMatchSnapshot,
+    player: LivePlayer,
+    teammates: list[LivePlayer],
+) -> str:
+    del snapshot, teammates
+    name = discord.utils.escape_markdown(player.steam_name)[:24]
+    allocation = _upgrade_allocation(player.upgrades, limit=100)
+    return f"**{name}** · Upgrades `{allocation}`"
+
+
+def _build_watch_player_page(
+    snapshot: LiveMatchSnapshot,
+    player: LivePlayer | None,
+    highlighted_account_id: int | None,
+    stream_status: str,
+) -> discord.Embed:
+    if player is None:
+        embed = _watch_shell(snapshot, "Player", stream_status)
+        embed.description += "\n\nNo players have been reported."
+        return embed
+    hero = snapshot.hero(player.hero_id)
+    hero_name = hero.name if hero else (
+        f"Hero {player.hero_id}" if player.hero_id is not None else "Unknown hero"
+    )
+    name = discord.utils.escape_markdown(player.steam_name)
+    if player.account_id == highlighted_account_id:
+        name += " · You"
+    embed = _watch_shell(snapshot, name, stream_status)
+    embed.description += f"\n**{hero_name}** · {_team_name(player.team)} · Lane {player.assigned_lane or '—'}"
+    minutes = max((snapshot.game_time_seconds or 0) / 60, 1 / 60)
+    embed.add_field(
+        name=field_name("Score"),
+        value=f"`{player.kills}/{player.deaths}/{player.assists}`",
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Economy"),
+        value=f"{_number(player.net_worth)} souls\n{player.net_worth / minutes:,.0f}/min",
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Farm"),
+        value=f"{player.last_hits:,} last hits\n{player.denies:,} denies",
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Damage"),
+        value=f"{_number(player.hero_damage)} hero\n{_number(player.objective_damage)} objective",
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Sustain"),
+        value=(
+            f"{_number(player.hero_healing)} ally healing\n"
+            f"{_number(player.self_healing)} self healing"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Live upgrade IDs"),
+        value=_upgrade_allocation(player.upgrades),
+        inline=False,
+    )
+    if hero and hero.icon_url:
+        embed.set_thumbnail(url=hero.icon_url)
+    finish_embed(
+        embed,
+        "Live match watch",
+        source="Deadlock live-events parser",
+        context="Player detail",
     )
     return embed
 
@@ -139,7 +322,7 @@ def build_scout_overview_embeds(
         header,
         "Pre-game scouting",
         source="Deadlock API + live-events parser",
-        context="Comfort is an experience estimate",
+        context="Game totals use recorded Deadlock API history",
     )
     return tuple(embeds)
 
@@ -167,13 +350,18 @@ def build_scout_player_embed(
     )
     embed.add_field(name=field_name("Rank"), value=_scout_rank(player), inline=True)
     embed.add_field(
-        name=field_name("Hero comfort"),
-        value=_comfort(player),
+        name=field_name("Hero history"),
+        value=_hero_history(player),
         inline=True,
     )
     embed.add_field(
         name=field_name("Recent form"),
         value=_recent_form(player.recent_outcomes),
+        inline=False,
+    )
+    embed.add_field(
+        name=field_name("Top heroes"),
+        value=_top_heroes(player),
         inline=False,
     )
     steam_id64 = STEAM_ID64_OFFSET + live.account_id
@@ -220,18 +408,11 @@ def _scout_overview_card(player: ScoutedPlayer) -> str:
         if player.player.hero_id is not None
         else "Unknown hero"
     )
-    experience = player.experience
-    if experience is None or experience.matches_played <= 0:
-        sample = "No recorded hero games"
-    else:
-        sample = f"{experience.matches_played} games"
-        if experience.win_rate is not None:
-            sample += f" · {experience.win_rate:.0%} WR"
     form = " ".join(player.recent_outcomes) if player.recent_outcomes else "No recent form"
     return (
         f"**{hero_name}**\n"
-        f"{_scout_rank(player)} · {_comfort_label(player)} comfort\n"
-        f"{sample}\n"
+        f"{_scout_rank(player)} · {_total_games(player)}\n"
+        f"{_hero_history(player)}\n"
         f"`{form}`"
     )
 
@@ -247,31 +428,48 @@ def _scout_rank(player: ScoutedPlayer) -> str:
     return f"{name} {suffix}"
 
 
-def _comfort(player: ScoutedPlayer) -> str:
+def _total_games(player: ScoutedPlayer) -> str:
+    if player.total_matches is None:
+        return "Unknown total games"
+    return f"{player.total_matches} total games"
+
+
+def _hero_history(player: ScoutedPlayer) -> str:
     experience = player.experience
     if experience is None or experience.matches_played <= 0:
-        return "Unproven"
-    games = experience.matches_played
-    label = _comfort_label(player)
+        if player.total_matches is not None and player.total_matches > 0:
+            return "0 (0%) hero games"
+        return "No recorded hero games"
+    share = player.hero_match_share
+    games = (
+        f"{experience.matches_played} ({share:.0%}) hero games"
+        if share is not None
+        else f"{experience.matches_played} hero games"
+    )
+    parts = [games]
     win_rate = experience.win_rate
-    rate = f", {win_rate:.0%} WR" if win_rate is not None else ""
-    return f"{label} ({games} games{rate})"
+    if win_rate is not None:
+        parts.append(f"{win_rate:.0%} WR")
+    return " · ".join(parts)
 
 
-def _comfort_label(player: ScoutedPlayer) -> str:
-    experience = player.experience
-    if experience is None or experience.matches_played <= 0:
-        return "Unproven"
-    games = experience.matches_played
-    if games < 5:
-        return "New"
-    if games < 15:
-        return "Low"
-    if games < 40:
-        return "Moderate"
-    if games < 100:
-        return "High"
-    return "Very high"
+def _top_heroes(player: ScoutedPlayer) -> str:
+    if not player.top_heroes:
+        return "No recorded hero statistics"
+    lines: list[str] = []
+    for index, record in enumerate(player.top_heroes, start=1):
+        experience = record.experience
+        hero_name = (
+            record.hero.name if record.hero is not None else f"Hero {experience.hero_id}"
+        )
+        hero_name = discord.utils.escape_markdown(hero_name)[:40]
+        stats = [f"{experience.matches_played} games"]
+        if experience.win_rate is not None:
+            stats.append(f"{experience.win_rate:.0%} WR")
+        if player.total_matches is not None and player.total_matches > 0:
+            stats.append(f"{experience.matches_played / player.total_matches:.0%} played")
+        lines.append(f"`{index}.` **{hero_name}** — {' · '.join(stats)}")
+    return "\n".join(lines)
 
 
 def _recent_form(outcomes: tuple[str, ...]) -> str:
@@ -284,9 +482,9 @@ def _recent_form(outcomes: tuple[str, ...]) -> str:
 
 def _team_name(team: int | None) -> str:
     if team == 2:
-        return "Amber team"
+        return "Amber"
     if team == 3:
-        return "Sapphire team"
+        return "Sapphire"
     return f"Team {team}" if team is not None else "Unknown team"
 
 
@@ -315,8 +513,16 @@ def _number(value: int | None) -> str:
     return f"{value:,}" if value is not None else "Unknown"
 
 
-def _clean_enum(value: str | None) -> str | None:
-    if not value:
-        return None
-    cleaned = value.removeprefix("KECitadelGameMode").replace("_", " ")
-    return cleaned if cleaned else None
+def _compact_number(value: int) -> str:
+    if abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m"
+    if abs(value) >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return str(value)
+
+
+def _upgrade_allocation(upgrades: tuple[int, ...], *, limit: int = 1_000) -> str:
+    allocation = " · ".join(map(str, upgrades)) if upgrades else "Not reported"
+    if len(allocation) > limit:
+        return allocation[: limit - 1] + "…"
+    return allocation

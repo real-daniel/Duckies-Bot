@@ -10,9 +10,10 @@ from dataclasses import dataclass, replace
 
 from .models import (
     HeroExperience,
+    HeroRecord,
     HeroSummary,
+    ItemSummary,
     LiveChatMessage,
-    LiveLookup,
     LiveMatchSnapshot,
     MatchScout,
     PlayerHistory,
@@ -40,9 +41,18 @@ class DeadlockService:
         self.broadcast_urls = broadcast_urls
         self._profile_cache: dict[int, _CachedProfile] = {}
         self._experience_cache: dict[tuple[int, int], _CachedExperience] = {}
+        self._total_matches_cache: dict[int, _CachedTotalMatches] = {}
         self._hero_cache: dict[int, HeroSummary] = {}
         self._hero_cache_expires_at = 0.0
         self._hero_cache_lock = asyncio.Lock()
+        self._hero_icon_cache: dict[int, _CachedAssetIcon] = {}
+        self._hero_icon_locks: dict[int, asyncio.Lock] = {}
+        self._item_cache: dict[int, ItemSummary] = {}
+        self._item_cache_expires_at = 0.0
+        self._item_cache_lock = asyncio.Lock()
+        self._item_icon_cache: dict[int, _CachedAssetIcon] = {}
+        self._item_icon_locks: dict[int, asyncio.Lock] = {}
+        self._asset_icon_limit = asyncio.Semaphore(8)
         self._rank_assets: tuple[RankAsset, ...] = ()
         self._rank_assets_expires_at = 0.0
         self._broadcast_url_cache: dict[int, _CachedBroadcastURL] = {}
@@ -51,17 +61,10 @@ class DeadlockService:
         self._active_match_ids_expires_at = 0.0
         self._active_match_ids_lock = asyncio.Lock()
 
-    async def live_lookup(self, account_id: int) -> LiveLookup | None:
+    async def active_match_id(self, account_id: int) -> int | None:
+        """Find a linked account's match without fetching unused hero assets."""
         match = await self.client.get_active_match(account_id)
-        if match is None:
-            return None
-        player = match.player(account_id)
-        if player is None:
-            return None
-        hero = None
-        if player.hero_id is not None:
-            hero = (await self._get_heroes((player.hero_id,))).get(player.hero_id)
-        return LiveLookup(match, player, hero)
+        return match.match_id if match is not None else None
 
     async def random_top_200_match_id(self) -> int:
         now = time.monotonic()
@@ -71,14 +74,17 @@ class DeadlockService:
                 if self._active_match_ids_expires_at <= now:
                     matches = await self.client.get_active_matches()
                     self._active_match_ids = tuple(
-                        match.match_id for match in matches if match.match_id > 0
+                        match.match_id
+                        for match in matches
+                        if match.match_id > 0 and len(match.players) >= 10
                     )
                     self._active_match_ids_expires_at = (
                         now + _ACTIVE_MATCHES_TTL_SECONDS
                     )
         if not self._active_match_ids:
             raise DeadlockAPIError(
-                "Deadlock's top-200 Watch feed does not currently contain a match."
+                "Deadlock's top-200 Watch feed does not currently contain a "
+                "standard 6v6 match."
             )
         return random.choice(self._active_match_ids)
 
@@ -87,16 +93,7 @@ class DeadlockService:
             raise DeadlockAPIError("The Deadlock live parser is not configured.")
         broadcast_url = await self._get_broadcast_url(match_id)
         snapshot = await self.live_client.get_match_players(match_id, broadcast_url)
-        hero_ids = sorted(
-            {player.hero_id for player in snapshot.players if player.hero_id is not None}
-        )
-        heroes_by_id = await self._get_heroes(hero_ids)
-        heroes = tuple(
-            heroes_by_id[hero_id]
-            for hero_id in hero_ids
-            if hero_id in heroes_by_id
-        )
-        return replace(snapshot, heroes=heroes)
+        return await self._enrich_live_snapshot(snapshot)
 
     async def scout_match(self, match_id: int) -> MatchScout:
         snapshot = await self._live_match_with_retries(match_id)
@@ -111,11 +108,28 @@ class DeadlockService:
         )
         experiences_task = self._get_experiences(pairs)
         rank_assets_task = self._get_rank_assets()
-        profiles, experiences, rank_assets = await asyncio.gather(
+        profiles, experience_data, rank_assets = await asyncio.gather(
             profiles_task,
             experiences_task,
             rank_assets_task,
         )
+        experiences, total_matches_by_account, all_experiences = experience_data
+        top_experiences_by_account: dict[int, tuple[HeroExperience, ...]] = {}
+        top_hero_ids: set[int] = set()
+        for account_id in {player.account_id for player in snapshot.players}:
+            top = tuple(
+                sorted(
+                    (
+                        item
+                        for item in all_experiences
+                        if item.account_id == account_id and item.matches_played > 0
+                    ),
+                    key=lambda item: (-item.matches_played, -item.wins, item.hero_id),
+                )[:5]
+            )
+            top_experiences_by_account[account_id] = top
+            top_hero_ids.update(item.hero_id for item in top)
+        top_hero_assets = await self._get_heroes(tuple(top_hero_ids))
         rank_names = {asset.tier: asset.name for asset in rank_assets}
         experience_by_pair = {
             (experience.account_id, experience.hero_id): experience
@@ -137,6 +151,14 @@ class DeadlockService:
                     rank_name=rank_name,
                     experience=experience_by_pair.get((player.account_id, player.hero_id)),
                     recent_outcomes=profile.history.outcomes if profile.history else (),
+                    total_matches=total_matches_by_account.get(player.account_id),
+                    top_heroes=tuple(
+                        HeroRecord(
+                            experience=item,
+                            hero=top_hero_assets.get(item.hero_id),
+                        )
+                        for item in top_experiences_by_account.get(player.account_id, ())
+                    ),
                 )
             )
         return MatchScout(
@@ -153,6 +175,89 @@ class DeadlockService:
             raise DeadlockAPIError("The Deadlock live parser is not configured.")
         async for message in self.live_client.stream_chat_messages(match_id):
             yield message
+
+    async def stream_live_match(
+        self,
+        match_id: int,
+    ) -> AsyncIterator[LiveMatchSnapshot]:
+        if self.live_client is None:
+            raise DeadlockAPIError("The Deadlock live parser is not configured.")
+        broadcast_url = await self._get_broadcast_url(match_id)
+        async for snapshot in self.live_client.stream_match_snapshots(
+            match_id,
+            broadcast_url,
+        ):
+            yield await self._enrich_live_snapshot(snapshot)
+
+    async def scoreboard_item_icons(
+        self,
+        snapshot: LiveMatchSnapshot,
+    ) -> dict[int, bytes]:
+        """Return cached icon bytes for the shop items currently on the scoreboard."""
+        items = tuple(item for item in snapshot.items if item.icon_url is not None)
+        if not items:
+            return {}
+        resolved = await asyncio.gather(
+            *(self._get_item_icon(item) for item in items)
+        )
+        return {
+            item.item_id: payload
+            for item, payload in zip(items, resolved, strict=True)
+            if payload
+        }
+
+    async def scoreboard_hero_icons(
+        self,
+        snapshot: LiveMatchSnapshot,
+    ) -> dict[int, bytes]:
+        """Return cached icon bytes for the heroes currently on the scoreboard."""
+        heroes = tuple(hero for hero in snapshot.heroes if hero.icon_url is not None)
+        if not heroes:
+            return {}
+        resolved = await asyncio.gather(
+            *(
+                self._get_asset_icon(
+                    hero.hero_id,
+                    hero.icon_url,
+                    self._hero_icon_cache,
+                    self._hero_icon_locks,
+                )
+                for hero in heroes
+            )
+        )
+        return {
+            hero.hero_id: payload
+            for hero, payload in zip(heroes, resolved, strict=True)
+            if payload
+        }
+
+    async def _enrich_live_snapshot(
+        self,
+        snapshot: LiveMatchSnapshot,
+    ) -> LiveMatchSnapshot:
+        hero_ids = sorted(
+            {player.hero_id for player in snapshot.players if player.hero_id is not None}
+        )
+        item_ids = sorted(
+            {item_id for player in snapshot.players for item_id in player.upgrades}
+        )
+        heroes_by_id, items_by_id = await asyncio.gather(
+            self._get_heroes(hero_ids),
+            self._get_items(item_ids),
+        )
+        return replace(
+            snapshot,
+            heroes=tuple(
+                heroes_by_id[hero_id]
+                for hero_id in hero_ids
+                if hero_id in heroes_by_id
+            ),
+            items=tuple(
+                items_by_id[item_id]
+                for item_id in item_ids
+                if item_id in items_by_id
+            ),
+        )
 
     async def _get_broadcast_url(self, match_id: int) -> str:
         now = time.monotonic()
@@ -229,36 +334,69 @@ class DeadlockService:
     async def _get_experiences(
         self,
         pairs: set[tuple[int, int]],
-    ) -> tuple[HeroExperience, ...]:
+    ) -> tuple[
+        tuple[HeroExperience, ...],
+        dict[int, int],
+        tuple[HeroExperience, ...],
+    ]:
         now = time.monotonic()
-        missing = {
-            pair
-            for pair in pairs
-            if pair not in self._experience_cache
-            or self._experience_cache[pair].expires_at <= now
+        account_ids = {account_id for account_id, _ in pairs}
+        missing_accounts = {
+            account_id
+            for account_id in account_ids
+            if account_id not in self._total_matches_cache
+            or self._total_matches_cache[account_id].expires_at <= now
         }
-        if missing:
+        if missing_accounts:
             try:
                 fetched = await self.client.get_hero_experience(
-                    [account_id for account_id, _ in missing],
-                    [hero_id for _, hero_id in missing],
+                    sorted(missing_accounts),
                 )
             except DeadlockAPIError:
-                fetched = ()
-            fetched_by_pair = {
-                (item.account_id, item.hero_id): item for item in fetched
-            }
-            for pair in missing:
-                self._experience_cache[pair] = _CachedExperience(
-                    expires_at=now + 15 * 60,
-                    experience=fetched_by_pair.get(pair),
-                )
-        return tuple(
+                fetched = None
+            if fetched is not None:
+                fetched_by_pair = {
+                    (item.account_id, item.hero_id): item for item in fetched
+                }
+                totals = {account_id: 0 for account_id in missing_accounts}
+                for item in fetched:
+                    if item.account_id in totals:
+                        totals[item.account_id] += item.matches_played
+                    self._experience_cache[(item.account_id, item.hero_id)] = _CachedExperience(
+                        expires_at=now + 15 * 60,
+                        experience=item,
+                    )
+                for account_id, total in totals.items():
+                    self._total_matches_cache[account_id] = _CachedTotalMatches(
+                        expires_at=now + 15 * 60,
+                        matches=total,
+                    )
+                for pair in pairs:
+                    if pair[0] not in missing_accounts:
+                        continue
+                    self._experience_cache[pair] = _CachedExperience(
+                        expires_at=now + 15 * 60,
+                        experience=fetched_by_pair.get(pair),
+                    )
+        experiences = tuple(
             cached.experience
             for pair in pairs
             if (cached := self._experience_cache.get(pair)) is not None
             and cached.experience is not None
         )
+        totals = {
+            account_id: cached.matches
+            for account_id in account_ids
+            if (cached := self._total_matches_cache.get(account_id)) is not None
+        }
+        all_experiences = tuple(
+            cached.experience
+            for (account_id, _), cached in self._experience_cache.items()
+            if account_id in account_ids
+            and cached.expires_at > now
+            and cached.experience is not None
+        )
+        return experiences, totals, all_experiences
 
     async def _get_rank_assets(self) -> tuple[RankAsset, ...]:
         now = time.monotonic()
@@ -302,6 +440,75 @@ class DeadlockService:
             if hero_id in self._hero_cache
         }
 
+    async def _get_items(
+        self,
+        item_ids: list[int] | tuple[int, ...],
+    ) -> dict[int, ItemSummary]:
+        requested = set(item_ids)
+        if not requested:
+            return {}
+        now = time.monotonic()
+        if self._item_cache_expires_at <= now:
+            async with self._item_cache_lock:
+                now = time.monotonic()
+                if self._item_cache_expires_at <= now:
+                    try:
+                        items = await self.client.get_items()
+                    except DeadlockAPIError:
+                        items = ()
+                    if items:
+                        self._item_cache = {
+                            item.item_id: item
+                            for item in items
+                            if item.shopable
+                            and item.icon_url is not None
+                            and item.slot_type in {"weapon", "vitality", "spirit"}
+                        }
+                        self._item_cache_expires_at = now + 24 * 60 * 60
+        return {
+            item_id: self._item_cache[item_id]
+            for item_id in requested
+            if item_id in self._item_cache
+        }
+
+    async def _get_item_icon(self, item: ItemSummary) -> bytes:
+        return await self._get_asset_icon(
+            item.item_id,
+            item.icon_url,
+            self._item_icon_cache,
+            self._item_icon_locks,
+        )
+
+    async def _get_asset_icon(
+        self,
+        asset_id: int,
+        icon_url: str | None,
+        cache: dict[int, _CachedAssetIcon],
+        locks: dict[int, asyncio.Lock],
+    ) -> bytes:
+        now = time.monotonic()
+        cached = cache.get(asset_id)
+        if cached is not None and cached.expires_at > now:
+            return cached.payload
+        lock = locks.setdefault(asset_id, asyncio.Lock())
+        async with lock:
+            now = time.monotonic()
+            cached = cache.get(asset_id)
+            if cached is not None and cached.expires_at > now:
+                return cached.payload
+            payload = b""
+            if icon_url is not None:
+                try:
+                    async with self._asset_icon_limit:
+                        payload = await self.client.get_asset_bytes(icon_url)
+                except (DeadlockAPIError, ValueError):
+                    payload = b""
+            cache[asset_id] = _CachedAssetIcon(
+                expires_at=now + (24 * 60 * 60 if payload else 5 * 60),
+                payload=payload,
+            )
+            return payload
+
     async def _try_get_rank(self, account_id: int) -> PlayerRank | None:
         try:
             return await self.client.get_player_rank(account_id)
@@ -326,6 +533,18 @@ class _CachedProfile:
 class _CachedExperience:
     expires_at: float
     experience: HeroExperience | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedTotalMatches:
+    expires_at: float
+    matches: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedAssetIcon:
+    expires_at: float
+    payload: bytes
 
 
 @dataclass(frozen=True, slots=True)
