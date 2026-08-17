@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextvars import ContextVar
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -35,12 +34,6 @@ from ..views import DeadlockScoutView, DeadlockWatchView, WATCH_SCOREBOARD_FILEN
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-_WATCHTEST_LAYOUT: ContextVar[bool] = ContextVar(
-    "deadlock_watchtest_layout",
-    default=False,
-)
 
 
 async def _match_id_autocomplete(
@@ -285,7 +278,6 @@ class DeadlockCog(commands.Cog):
         match_id: str | None = None,
         screenshot: discord.Attachment | None = None,
     ) -> None:
-        test_layout = _WATCHTEST_LAYOUT.get()
         if interaction.guild is None:
             await interaction.response.send_message("Use this command in a server.", ephemeral=True)
             return
@@ -379,11 +371,10 @@ class DeadlockCog(commands.Cog):
             first_snapshot,
             requester_id=interaction.user.id,
             highlighted_account_id=highlighted_id,
-            embed_scoreboard=not test_layout,
-            scoreboard_layout="discord" if test_layout else "standard",
+            embed_scoreboard=False,
+            scoreboard_layout="discord",
         )
-        if test_layout:
-            view.attachment_renderer = self._render_watch_scoreboard
+        view.attachment_renderer = self._render_watch_scoreboard
         scoreboard_png = await self._render_watch_scoreboard(view)
         message = await interaction.followup.send(
             embed=view.render(),
@@ -407,27 +398,6 @@ class DeadlockCog(commands.Cog):
             name=f"deadlock-watch-{interaction.guild.id}-{resolved_match_id}",
         )
         self._live_watches[key] = _LiveWatch(message, interaction.user.id, task, view)
-
-    @deadlock.command(
-        name="watchtest",
-        description="Try the experimental larger Deadlock scoreboard",
-    )
-    @app_commands.describe(
-        match_id="Numeric match ID or top-200; omit to find your linked account",
-        screenshot="Game screenshot with the match ID in the bottom-right; optional",
-    )
-    @app_commands.autocomplete(match_id=_match_id_autocomplete)
-    async def watchtest(
-        self,
-        interaction: discord.Interaction,
-        match_id: str | None = None,
-        screenshot: discord.Attachment | None = None,
-    ) -> None:
-        token = _WATCHTEST_LAYOUT.set(True)
-        try:
-            await self.watch.callback(self, interaction, match_id, screenshot)
-        finally:
-            _WATCHTEST_LAYOUT.reset(token)
 
     async def _resolve_match_id(self, value: str) -> int:
         normalized = value.strip().casefold()

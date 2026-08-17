@@ -517,7 +517,8 @@ class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
         command_names = {command.name for command in DeadlockCog.deadlock.commands}
         self.assertIn("chat", command_names)
         self.assertIn("chat-stop", command_names)
-        self.assertIn("watchtest", command_names)
+        self.assertIn("watch", command_names)
+        self.assertNotIn("watchtest", command_names)
 
     def test_match_commands_accept_screenshots(self) -> None:
         commands = {command.name: command for command in DeadlockCog.deadlock.commands}
@@ -1142,7 +1143,7 @@ class DeadlockWatchViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(embed.image.url, "attachment://deadlock-scoreboard.png")
         self.assertEqual(len(embed.fields), 0)
 
-    async def test_watchtest_overview_leaves_scoreboard_as_a_raw_attachment(self) -> None:
+    async def test_discord_overview_leaves_scoreboard_as_a_raw_attachment(self) -> None:
         snapshot = LiveMatchSnapshot(
             123,
             100,
