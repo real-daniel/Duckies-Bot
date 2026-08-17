@@ -1,6 +1,35 @@
 services:
+  bot:
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      DEADLOCK_LIVE_EVENTS_URL: http://deadlock-live-events:3000
+      DATABASE_PATH: /app/data/duckies.sqlite3
+      DEADLOCK_SCOUT_TEMPLATE_PATH: /app/data/deadlock_scout_template.json
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - deadlock-live-events
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   deadlock-live-events:
     image: ghcr.io/deadlock-api/deadlock-live-events:latest
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:3000:3000"
+    init: true
+    environment:
+      DEADLOCK_API_KEY: ${DEADLOCK_API_KEY:-}
+    expose:
+      - "3000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

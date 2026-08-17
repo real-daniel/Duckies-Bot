@@ -97,6 +97,29 @@ conditional refreshes, and keeps stale data available if a refresh fails.
 The first quest-log scan lazily initializes RapidOCR and can take a few seconds;
 screenshots are processed locally and are not sent to a separate OCR service.
 
+## Docker deployment
+
+The included Compose stack runs the Python bot and the Deadlock live-events
+parser on one host. The parser is reachable only from the private Compose
+network; port 3000 is not published to the internet.
+
+1. Copy `.env.example` to `.env` and set `DISCORD_TOKEN`.
+2. Optionally set `DISCORD_GUILD_ID` and `DEADLOCK_API_KEY`.
+3. Create the persistent data directory: `mkdir -p data`.
+4. Build and start both services: `docker compose up -d --build`.
+5. Follow startup logs: `docker compose logs -f --tail=100`.
+
+SQLite data and the cached Deadlock scout template are stored in the host's
+`data` directory and survive container replacement. Back up that directory
+regularly. Do not commit `.env` or the contents of `data`.
+
+To update the deployment after pulling repository changes:
+
+```bash
+docker compose pull
+docker compose up -d --build
+```
+
 ## Tests
 
 Run `python -m unittest discover -s tests -v`.

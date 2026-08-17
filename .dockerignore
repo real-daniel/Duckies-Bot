@@ -1,0 +1,14 @@
+.git
+.gitignore
+.idea
+.pytest_cache
+.venv
+__pycache__
+*.egg-info
+*.py[cod]
+.env
+archive
+data
+scripts
+tests
+download.jpg
