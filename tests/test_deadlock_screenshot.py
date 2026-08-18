@@ -56,6 +56,38 @@ class DeadlockScreenshotReaderTests(unittest.IsolatedAsyncioTestCase):
         reader = DeadlockScreenshotReader(FakeOCR((OCRLine("98855986", 0.75),)))
         self.assertEqual(await reader.extract_match_id(screenshot_bytes()), 98855986)
 
+    async def test_accepts_plain_nine_digit_candidate(self) -> None:
+        reader = DeadlockScreenshotReader(FakeOCR((OCRLine("100123456", 0.75),)))
+        self.assertEqual(await reader.extract_match_id(screenshot_bytes()), 100123456)
+
+    async def test_accepts_nine_digit_candidate_from_real_screenshot_ocr(self) -> None:
+        reader = DeadlockScreenshotReader(
+            FakeOCR((OCRLine("MATCH: 100141930", 0.99986),))
+        )
+        self.assertEqual(await reader.extract_match_id(screenshot_bytes()), 100141930)
+
+    async def test_accepts_plain_nine_digit_candidate_split_into_groups(self) -> None:
+        reader = DeadlockScreenshotReader(
+            FakeOCR(
+                (
+                    OCRLine("Match ID", 0.94),
+                    OCRLine("1O0 123 456", 0.78),
+                )
+            )
+        )
+        self.assertEqual(await reader.extract_match_id(screenshot_bytes()), 100123456)
+
+    async def test_prefers_current_nine_digit_candidate(self) -> None:
+        reader = DeadlockScreenshotReader(
+            FakeOCR(
+                (
+                    OCRLine("99887766", 0.95),
+                    OCRLine("100123456", 0.72),
+                )
+            )
+        )
+        self.assertEqual(await reader.extract_match_id(screenshot_bytes()), 100123456)
+
     async def test_rejects_image_without_match_id(self) -> None:
         reader = DeadlockScreenshotReader(FakeOCR((OCRLine("FPS 144", 0.99),)))
         with self.assertRaises(MatchIDNotRecognizedError):

@@ -65,26 +65,42 @@ def _prepare_bottom_right(image: bytes) -> bytes:
 
 
 def _find_match_id(lines: tuple[OCRLine, ...]) -> int | None:
-    candidates: list[tuple[int, float, int]] = []
+    candidates: list[tuple[int, int, float, int]] = []
     for line in lines:
         text = line.text.strip()
         lowered = text.casefold()
         labelled = "match" in lowered or "match id" in lowered
+        normalized = text.translate(
+            str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1"})
+        )
 
         # A labelled line can tolerate common OCR substitutions and spaces
         # between digits, e.g. "Match ID: 98 855 986".
         if labelled:
-            suffix = re.split(r"match\s*(?:id)?", text, maxsplit=1, flags=re.IGNORECASE)[-1]
-            normalized = suffix.translate(str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1"}))
-            digits = "".join(re.findall(r"\d", normalized))
+            suffix = re.split(
+                r"match\s*(?:id)?",
+                text,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[-1]
+            suffix = suffix.translate(
+                str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1"})
+            )
+            digits = "".join(re.findall(r"\d", suffix))
             if 7 <= len(digits) <= 12:
-                candidates.append((2, line.confidence, int(digits)))
+                candidates.append((2, len(digits) == 9, line.confidence, int(digits)))
 
-        for match in re.finditer(r"(?<!\d)(\d{7,12})(?!\d)", text):
-            digits = match.group(1)
-            likely_length = 1 if len(digits) in {8, 9} else 0
-            candidates.append((likely_length, line.confidence, int(digits)))
+        # RapidOCR may separate a longer ID into groups ("100 123 456") or
+        # put it on a different line from the Match ID label. Match eight- and
+        # nine-digit candidates with common separators in either case.
+        for match in re.finditer(
+            r"(?<!\d)(\d(?:[\s,._'-]*\d){8}|\d(?:[\s,._'-]*\d){7})"
+            r"(?![\s,._'-]*\d)",
+            normalized,
+        ):
+            digits = "".join(re.findall(r"\d", match.group(1)))
+            candidates.append((1 if labelled else 0, len(digits) == 9, line.confidence, int(digits)))
 
     if not candidates:
         return None
-    return max(candidates, key=lambda item: (item[0], item[1]))[2]
+    return max(candidates, key=lambda item: (item[0], item[1], item[2]))[3]

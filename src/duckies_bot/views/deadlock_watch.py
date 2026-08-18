@@ -59,7 +59,7 @@ class DeadlockWatchView(discord.ui.View):
         self.timeline: list[str] = [
             f"`{_game_time(snapshot)}` Watch started with {len(snapshot.players)} players."
         ]
-        self.message: discord.Message | None = None
+        self.message: discord.Message | discord.PartialMessage | None = None
         self.player_select = _WatchPlayerSelect(self)
         self.add_item(self.player_select)
         self._sync_controls()

@@ -35,6 +35,7 @@ from duckies_bot.providers.deadlock.live_client import DeadlockLiveClient
 from duckies_bot.views import DeadlockScoutView, DeadlockWatchView
 from duckies_bot.cogs.deadlock import (
     DeadlockCog,
+    _bot_authenticated_message,
     _format_chat_message,
     _newer_live_snapshot,
 )
@@ -941,6 +942,25 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DeadlockWatchReconnectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_long_lived_watch_uses_bot_authenticated_message_handle(self) -> None:
+        bot_message = SimpleNamespace(id=123)
+
+        class FakeChannel:
+            def __init__(self) -> None:
+                self.requested_id: int | None = None
+
+            def get_partial_message(self, message_id: int):
+                self.requested_id = message_id
+                return bot_message
+
+        channel = FakeChannel()
+        webhook_message = SimpleNamespace(id=123, channel=channel)
+
+        result = _bot_authenticated_message(webhook_message)  # type: ignore[arg-type]
+
+        self.assertIs(result, bot_message)
+        self.assertEqual(channel.requested_id, 123)
+
     async def test_idle_open_stream_is_closed_and_eventually_marked_ended(self) -> None:
         snapshot = LiveMatchSnapshot(
             123,
