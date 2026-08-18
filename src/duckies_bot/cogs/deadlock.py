@@ -60,7 +60,7 @@ class _ChatRelay:
 
 @dataclass(slots=True)
 class _LiveWatch:
-    message: discord.Message
+    message: discord.Message | discord.PartialMessage
     requester_id: int
     task: asyncio.Task[None]
     view: DeadlockWatchView
@@ -376,7 +376,7 @@ class DeadlockCog(commands.Cog):
         )
         view.attachment_renderer = self._render_watch_scoreboard
         scoreboard_png = await self._render_watch_scoreboard(view)
-        message = await interaction.followup.send(
+        interaction_message = await interaction.followup.send(
             embed=view.render(),
             file=discord.File(
                 BytesIO(scoreboard_png),
@@ -385,6 +385,7 @@ class DeadlockCog(commands.Cog):
             view=view,
             wait=True,
         )
+        message = _bot_authenticated_message(interaction_message)
         view.message = message
         assert stream is not None
         task = asyncio.create_task(
@@ -430,7 +431,7 @@ class DeadlockCog(commands.Cog):
         self,
         key: tuple[int, int],
         snapshots: AsyncIterator[LiveMatchSnapshot],
-        message: discord.Message,
+        message: discord.Message | discord.PartialMessage,
         view: DeadlockWatchView | int | None,
         initial_snapshot: LiveMatchSnapshot,
     ) -> None:
@@ -584,7 +585,7 @@ class DeadlockCog(commands.Cog):
 
     async def _edit_watch_message(
         self,
-        message: discord.Message,
+        message: discord.Message | discord.PartialMessage,
         view: DeadlockWatchView,
         message_view: discord.ui.View | None,
     ) -> None:
@@ -860,7 +861,7 @@ def _newer_live_snapshot(
 
 
 async def _safe_watch_edit(
-    message: discord.Message,
+    message: discord.Message | discord.PartialMessage,
     embed: discord.Embed | None,
     view: discord.ui.View | None = None,
     *,
@@ -886,3 +887,17 @@ async def _safe_watch_edit(
             message.id,
             exc_info=True,
         )
+
+
+def _bot_authenticated_message(message: discord.Message) -> discord.PartialMessage:
+    """Return a channel message handle whose edits use the bot token.
+
+    Interaction followups return WebhookMessage objects. Their edit method uses
+    the interaction token, which expires while a long-running watch is active.
+    A partial channel message edits the same Discord message through the normal
+    bot-authenticated channel endpoint instead.
+    """
+    get_partial_message = getattr(message.channel, "get_partial_message", None)
+    if not callable(get_partial_message):
+        raise RuntimeError("The watch response channel cannot create a message handle.")
+    return get_partial_message(message.id)
