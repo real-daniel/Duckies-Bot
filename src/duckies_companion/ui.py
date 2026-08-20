@@ -25,6 +25,8 @@ class CompanionWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Duckies Companion")
+        self._icon_photo: tk.PhotoImage | None = None
+        self._set_window_icon()
         self.root.geometry("620x390")
         self.root.minsize(540, 360)
         self._stop = threading.Event()
@@ -43,6 +45,14 @@ class CompanionWindow:
 
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+
+    def _set_window_icon(self) -> None:
+        icon_path = _asset_path("duckies_companion.png")
+        try:
+            self._icon_photo = tk.PhotoImage(file=icon_path)
+            self.root.iconphoto(True, self._icon_photo)
+        except tk.TclError:
+            self._icon_photo = None
 
     def _build(self) -> None:
         frame = ttk.Frame(self.root, padding=20)
@@ -190,6 +200,13 @@ def main() -> int:
         return 0
     root.mainloop()
     return 0
+
+
+def _asset_path(filename: str) -> str:
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root is not None:
+        return str(Path(bundle_root) / "assets" / filename)
+    return str(Path(__file__).resolve().parents[2] / "assets" / filename)
 
 
 if __name__ == "__main__":

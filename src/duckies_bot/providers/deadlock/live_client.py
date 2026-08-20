@@ -15,7 +15,11 @@ from ...features.deadlock.models import (
     LiveMatchSnapshot,
     LivePlayer,
 )
-from .errors import DeadlockAPIError, InvalidDeadlockResponseError
+from .errors import (
+    DeadlockAPIError,
+    InvalidDeadlockResponseError,
+    LiveDemoUnavailableError,
+)
 
 
 class DeadlockLiveClient:
@@ -88,6 +92,8 @@ class DeadlockLiveClient:
             ) as response:
                 if response.status >= 500:
                     detail = _clean_error_detail(await response.text())
+                    if "demo not available" in detail.casefold():
+                        raise LiveDemoUnavailableError()
                     if detail:
                         raise DeadlockAPIError(f"The live broadcast could not be read: {detail}")
                     raise DeadlockAPIError("The Deadlock live parser is temporarily unavailable.")

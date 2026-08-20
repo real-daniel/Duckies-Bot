@@ -7,6 +7,16 @@ class DeadlockAPIError(RuntimeError):
         self.user_message = user_message
 
 
+class LiveDemoUnavailableError(DeadlockAPIError):
+    """Raised when Valve's Source TV endpoint cannot serve the broadcast."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Valve's live broadcast endpoint is unavailable. Its URL may be stale, "
+            "or the live parser may be unable to reach Valve's CDN."
+        )
+
+
 class InvalidDeadlockResponseError(DeadlockAPIError):
     def __init__(self) -> None:
         super().__init__("The Deadlock API returned an unexpected response.")

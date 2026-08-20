@@ -37,6 +37,9 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   match-ended states instead of silently freezing. A 45-second event inactivity
   watchdog also recovers parser connections that remain open after Valve stops
   sending frames.
+- Companion-triggered watches tolerate the normal Source TV startup delay. If
+  Valve reports `Demo not available`, the bot keeps the connecting notice,
+  clears the cached broadcast URL, and retries for several minutes.
 - Valve broadcast URLs are fetched once per match and cached in SQLite for six
   hours, including across bot restarts. Live and scouting lookups reuse the URL
   instead of repeatedly calling Deadlock API. Chat startup currently makes one
@@ -155,7 +158,8 @@ powershell -ExecutionPolicy Bypass -File scripts/build_companion.ps1
 ```
 
 The distributable is written to `dist\DuckiesCompanion.exe`. It is a windowed,
-single-file build; copy that one executable to another Windows PC and run it.
+single-file build with the Duckies app icon; copy that one executable to another
+Windows PC and run it.
 
 Optional settings:
 

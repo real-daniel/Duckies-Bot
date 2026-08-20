@@ -28,7 +28,7 @@ from ..features.deadlock.scoreboard import (
     render_discord_scoreboard_page,
     render_live_scoreboard,
 )
-from ..providers.deadlock import DeadlockAPIError
+from ..providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
 from ..storage import CompanionPairing, CompanionPairingRepository, SteamLinkRepository
 from ..views import DeadlockScoutView, DeadlockWatchView, WATCH_SCOREBOARD_FILENAME
 
@@ -70,6 +70,7 @@ _WATCH_REFRESH_SECONDS = 60.0
 _WATCH_RECONNECT_DELAYS = (3.0, 8.0, 15.0, 30.0)
 _WATCH_IDLE_SECONDS = 45.0
 _WATCH_END_CONFIRMATIONS = 2
+_COMPANION_DEMO_RETRY_DELAYS = (10.0, 20.0, 30.0, 45.0, 60.0)
 
 
 class DeadlockCog(commands.Cog):
@@ -526,9 +527,10 @@ class DeadlockCog(commands.Cog):
         )
         stream: AsyncIterator[LiveMatchSnapshot] | None = None
         try:
-            stream = self.service.stream_live_match(match_id)
-            async with asyncio.timeout(45):
-                first_snapshot = await anext(stream)
+            stream, first_snapshot = await self._wait_for_companion_demo(
+                match_id,
+                notice,
+            )
         except TimeoutError:
             if stream is not None:
                 await stream.aclose()
@@ -583,6 +585,36 @@ class DeadlockCog(commands.Cog):
             task,
             view,
         )
+
+    async def _wait_for_companion_demo(
+        self,
+        match_id: int,
+        notice: discord.Message,
+    ) -> tuple[AsyncIterator[LiveMatchSnapshot], LiveMatchSnapshot]:
+        attempts = len(_COMPANION_DEMO_RETRY_DELAYS) + 1
+        for attempt in range(attempts):
+            stream = self.service.stream_live_match(match_id)
+            try:
+                async with asyncio.timeout(45):
+                    return stream, await anext(stream)
+            except LiveDemoUnavailableError:
+                await stream.aclose()
+                await self.service.invalidate_broadcast_url(match_id)
+                if attempt >= len(_COMPANION_DEMO_RETRY_DELAYS):
+                    raise
+                delay = _COMPANION_DEMO_RETRY_DELAYS[attempt]
+                await notice.edit(
+                    content=(
+                        f"Companion detected match `{match_id}`. Valve's live broadcast "
+                        f"endpoint is unavailable; refreshing it and retrying in {int(delay)} seconds "
+                        f"({attempt + 2}/{attempts})…"
+                    )
+                )
+                await asyncio.sleep(delay)
+            except BaseException:
+                await stream.aclose()
+                raise
+        raise RuntimeError("companion demo retry loop ended unexpectedly")
 
     async def _resolve_match_id(self, value: str) -> int:
         normalized = value.strip().casefold()
