@@ -34,6 +34,9 @@ class BroadcastURLRepository:
     async def put(self, match_id: int, url: str, expires_at: float) -> None:
         await self._run(self._put_sync, match_id, url, expires_at)
 
+    async def delete(self, match_id: int) -> None:
+        await self._run(self._delete_sync, match_id)
+
     async def _run(self, operation: Callable[..., T], *args: object) -> T:
         return await asyncio.to_thread(operation, *args)
 
@@ -84,5 +87,13 @@ class BroadcastURLRepository:
                     expires_at = excluded.expires_at
                 """,
                 (match_id, url, expires_at),
+            )
+            connection.commit()
+
+    def _delete_sync(self, match_id: int) -> None:
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "DELETE FROM deadlock_broadcast_urls WHERE match_id = ?",
+                (match_id,),
             )
             connection.commit()

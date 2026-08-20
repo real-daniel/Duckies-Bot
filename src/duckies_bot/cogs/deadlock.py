@@ -28,8 +28,8 @@ from ..features.deadlock.scoreboard import (
     render_discord_scoreboard_page,
     render_live_scoreboard,
 )
-from ..providers.deadlock import DeadlockAPIError
-from ..storage import SteamLinkRepository
+from ..providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
+from ..storage import CompanionPairing, CompanionPairingRepository, SteamLinkRepository
 from ..views import DeadlockScoutView, DeadlockWatchView, WATCH_SCOREBOARD_FILENAME
 
 
@@ -70,6 +70,7 @@ _WATCH_REFRESH_SECONDS = 60.0
 _WATCH_RECONNECT_DELAYS = (3.0, 8.0, 15.0, 30.0)
 _WATCH_IDLE_SECONDS = 45.0
 _WATCH_END_CONFIRMATIONS = 2
+_COMPANION_DEMO_RETRY_DELAYS = (10.0, 20.0, 30.0, 45.0, 60.0)
 
 
 class DeadlockCog(commands.Cog):
@@ -80,12 +81,14 @@ class DeadlockCog(commands.Cog):
         bot: commands.Bot,
         service: DeadlockService,
         links: SteamLinkRepository,
+        companion_pairings: CompanionPairingRepository,
         screenshot_reader: DeadlockScreenshotReader,
         scout_templates: ScoutTemplateCache,
     ) -> None:
         self.bot = bot
         self.service = service
         self.links = links
+        self.companion_pairings = companion_pairings
         self.screenshot_reader = screenshot_reader
         self.scout_templates = scout_templates
         self._chat_relays: dict[tuple[int, int], _ChatRelay] = {}
@@ -399,6 +402,219 @@ class DeadlockCog(commands.Cog):
             name=f"deadlock-watch-{interaction.guild.id}-{resolved_match_id}",
         )
         self._live_watches[key] = _LiveWatch(message, interaction.user.id, task, view)
+
+    @deadlock.command(
+        name="companion-pair",
+        description="Pair the local companion with a live-watch channel",
+    )
+    @app_commands.describe(channel="Channel where automatic match watches should appear")
+    async def companion_pair(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel | None = None,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+            return
+        target = channel or _thread_parent(interaction.channel)
+        if target is None:
+            await interaction.response.send_message(
+                "Run this in a standard text channel or select one explicitly.",
+                ephemeral=True,
+            )
+            return
+        permissions = target.permissions_for(interaction.guild.me) if interaction.guild.me else None
+        if permissions is not None and not (
+            permissions.view_channel and permissions.send_messages and permissions.embed_links
+        ):
+            await interaction.response.send_message(
+                "I need View Channel, Send Messages, and Embed Links in that channel.",
+                ephemeral=True,
+            )
+            return
+
+        _pairing, token = await self.companion_pairings.create(
+            interaction.user.id,
+            interaction.guild.id,
+            target.id,
+        )
+        public_url = getattr(self.bot, "settings", None)
+        endpoint_base = getattr(public_url, "companion_public_url", None)
+        endpoint = (
+            f"{endpoint_base}/v1/companion/matches"
+            if endpoint_base
+            else "https://YOUR-DOMAIN/v1/companion/matches"
+        )
+        await interaction.response.send_message(
+            "The companion is paired with "
+            f"{target.mention}. This token is shown once; pairing again rotates it.\n\n"
+            "On the gaming PC, run:\n"
+            f"```powershell\n$env:DUCKIES_COMPANION_ENDPOINT = \"{endpoint}\"\n"
+            f"$env:DUCKIES_COMPANION_TOKEN = \"{token}\"\n"
+            "duckies-companion --launch\n```",
+            ephemeral=True,
+        )
+
+    @deadlock.command(
+        name="companion-disable",
+        description="Disable your companion pairing in this server",
+    )
+    async def companion_disable(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+            return
+        disabled = await self.companion_pairings.disable(
+            interaction.user.id,
+            interaction.guild.id,
+        )
+        message = (
+            "The companion pairing has been disabled."
+            if disabled
+            else "You do not have an active companion pairing in this server."
+        )
+        await interaction.response.send_message(message, ephemeral=True)
+
+    async def start_companion_watch(
+        self,
+        pairing: CompanionPairing,
+        match_id: int,
+    ) -> None:
+        """Start a normal live watch from an authenticated companion event."""
+
+        await self.bot.wait_until_ready()
+        guild = self.bot.get_guild(pairing.guild_id)
+        if guild is None:
+            LOGGER.warning("Companion pairing references unavailable guild %d", pairing.guild_id)
+            return
+        channel = self.bot.get_channel(pairing.channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(pairing.channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                LOGGER.warning(
+                    "Companion pairing channel %d is unavailable",
+                    pairing.channel_id,
+                    exc_info=True,
+                )
+                return
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            LOGGER.warning(
+                "Companion pairing channel %d cannot receive watches",
+                pairing.channel_id,
+            )
+            return
+
+        key = (pairing.guild_id, match_id)
+        existing = self._live_watches.get(key)
+        if existing is not None and not existing.task.done():
+            return
+        active_in_guild = sum(
+            not watch.task.done()
+            for watch_key, watch in self._live_watches.items()
+            if watch_key[0] == pairing.guild_id
+        )
+        if active_in_guild >= 3:
+            await channel.send(
+                f"Companion detected match `{match_id}`, but this server already has "
+                "three active watches.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
+        notice = await channel.send(
+            f"Companion detected match `{match_id}`. Connecting to the delayed live broadcast…",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        stream: AsyncIterator[LiveMatchSnapshot] | None = None
+        try:
+            stream, first_snapshot = await self._wait_for_companion_demo(
+                match_id,
+                notice,
+            )
+        except TimeoutError:
+            if stream is not None:
+                await stream.aclose()
+            await notice.edit(
+                content=f"Companion detected match `{match_id}`, but the live broadcast timed out."
+            )
+            return
+        except (DeadlockAPIError, StopAsyncIteration) as exc:
+            if stream is not None:
+                await stream.aclose()
+            message = (
+                exc.user_message
+                if isinstance(exc, DeadlockAPIError)
+                else "The live broadcast ended without returning player data."
+            )
+            await notice.edit(content=f"Could not start match `{match_id}`: {message}")
+            return
+        except Exception:
+            if stream is not None:
+                await stream.aclose()
+            LOGGER.exception("Unexpected error while starting companion watch %d", match_id)
+            await notice.edit(content=f"Something went wrong while starting match `{match_id}`.")
+            return
+
+        account = await self.links.get(pairing.discord_user_id)
+        view = DeadlockWatchView(
+            first_snapshot,
+            requester_id=pairing.discord_user_id,
+            highlighted_account_id=account.account_id if account is not None else None,
+            embed_scoreboard=False,
+            scoreboard_layout="discord",
+        )
+        view.attachment_renderer = self._render_watch_scoreboard
+        scoreboard_png = await self._render_watch_scoreboard(view)
+        await notice.edit(
+            content=None,
+            embed=view.render(),
+            attachments=[
+                discord.File(BytesIO(scoreboard_png), filename=WATCH_SCOREBOARD_FILENAME)
+            ],
+            view=view,
+        )
+        view.message = notice
+        assert stream is not None
+        task = asyncio.create_task(
+            self._update_live_watch(key, stream, notice, view, first_snapshot),
+            name=f"deadlock-watch-{pairing.guild_id}-{match_id}",
+        )
+        self._live_watches[key] = _LiveWatch(
+            notice,
+            pairing.discord_user_id,
+            task,
+            view,
+        )
+
+    async def _wait_for_companion_demo(
+        self,
+        match_id: int,
+        notice: discord.Message,
+    ) -> tuple[AsyncIterator[LiveMatchSnapshot], LiveMatchSnapshot]:
+        attempts = len(_COMPANION_DEMO_RETRY_DELAYS) + 1
+        for attempt in range(attempts):
+            stream = self.service.stream_live_match(match_id)
+            try:
+                async with asyncio.timeout(45):
+                    return stream, await anext(stream)
+            except LiveDemoUnavailableError:
+                await stream.aclose()
+                await self.service.invalidate_broadcast_url(match_id)
+                if attempt >= len(_COMPANION_DEMO_RETRY_DELAYS):
+                    raise
+                delay = _COMPANION_DEMO_RETRY_DELAYS[attempt]
+                await notice.edit(
+                    content=(
+                        f"Companion detected match `{match_id}`. Valve's live broadcast "
+                        f"endpoint is unavailable; refreshing it and retrying in {int(delay)} seconds "
+                        f"({attempt + 2}/{attempts})…"
+                    )
+                )
+                await asyncio.sleep(delay)
+            except BaseException:
+                await stream.aclose()
+                raise
+        raise RuntimeError("companion demo retry loop ended unexpectedly")
 
     async def _resolve_match_id(self, value: str) -> int:
         normalized = value.strip().casefold()

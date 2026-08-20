@@ -88,6 +88,8 @@ class BroadcastURLRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(stored)
         assert stored is not None
         self.assertEqual(stored.url, "https://relay.example.test/match/123")
+        await self.repository.delete(123)
+        self.assertIsNone(await self.repository.get(123))
 
         await self.repository.put(
             456,

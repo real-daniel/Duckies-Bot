@@ -21,11 +21,16 @@ from .models import (
     RankAsset,
     ScoutedPlayer,
 )
-from ...providers.deadlock import DeadlockAPIError, DeadlockClient, DeadlockLiveClient
+from ...providers.deadlock import (
+    DeadlockAPIError,
+    DeadlockClient,
+    DeadlockLiveClient,
+    LiveDemoUnavailableError,
+)
 from ...storage import BroadcastURLRepository
 
 
-_BROADCAST_URL_TTL_SECONDS = 6 * 60 * 60
+_BROADCAST_URL_TTL_SECONDS = 15 * 60
 _ACTIVE_MATCHES_TTL_SECONDS = 30
 
 
@@ -182,12 +187,28 @@ class DeadlockService:
     ) -> AsyncIterator[LiveMatchSnapshot]:
         if self.live_client is None:
             raise DeadlockAPIError("The Deadlock live parser is not configured.")
-        broadcast_url = await self._get_broadcast_url(match_id)
-        async for snapshot in self.live_client.stream_match_snapshots(
-            match_id,
-            broadcast_url,
-        ):
-            yield await self._enrich_live_snapshot(snapshot)
+        for attempt in range(2):
+            broadcast_url = await self._get_broadcast_url(match_id)
+            try:
+                async for snapshot in self.live_client.stream_match_snapshots(
+                    match_id,
+                    broadcast_url,
+                ):
+                    yield await self._enrich_live_snapshot(snapshot)
+                return
+            except LiveDemoUnavailableError:
+                await self.invalidate_broadcast_url(match_id)
+                if attempt > 0:
+                    raise
+
+    async def invalidate_broadcast_url(self, match_id: int) -> None:
+        """Discard a broadcast URL that Valve's CDN could not serve."""
+
+        lock = self._broadcast_url_locks.setdefault(match_id, asyncio.Lock())
+        async with lock:
+            self._broadcast_url_cache.pop(match_id, None)
+            if self.broadcast_urls is not None:
+                await self.broadcast_urls.delete(match_id)
 
     async def scoreboard_item_icons(
         self,

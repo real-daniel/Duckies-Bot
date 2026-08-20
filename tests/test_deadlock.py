@@ -3,7 +3,7 @@
 from typing import Any
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from duckies_bot.features.deadlock import DeadlockService
 from duckies_bot.features.deadlock.formatter import (
@@ -29,7 +29,7 @@ from duckies_bot.features.deadlock.models import (
     RankAsset,
     ScoutedPlayer,
 )
-from duckies_bot.providers.deadlock import DeadlockAPIError
+from duckies_bot.providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
 from duckies_bot.providers.deadlock.client import DeadlockClient
 from duckies_bot.providers.deadlock.live_client import DeadlockLiveClient
 from duckies_bot.views import DeadlockScoutView, DeadlockWatchView
@@ -85,6 +85,7 @@ class FakeContent:
 class FakeSSEResponse:
     def __init__(self, body: str, status: int = 200) -> None:
         self.status = status
+        self.body = body
         self.content = FakeContent(
             [line.encode("utf-8") for line in body.splitlines(keepends=True)]
         )
@@ -96,7 +97,7 @@ class FakeSSEResponse:
         return None
 
     async def text(self) -> str:
-        return ""
+        return self.body
 
 
 class FakeSSESession:
@@ -266,6 +267,21 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_classifies_valve_demo_not_available_as_retryable(self) -> None:
+        response = FakeSSEResponse(
+            "Internal server error: Demo not available: error sending request for url",
+            status=500,
+        )
+        client = DeadlockLiveClient(
+            session=FakeSSESession(response)
+        )  # type: ignore[arg-type]
+
+        with self.assertRaises(LiveDemoUnavailableError):
+            await client.get_match_players(
+                100651563,
+                "http://dist1-ord1.steamcontent.com/tv/example/sync",
+            )
+
     async def test_maps_hero_killed_entity_indexes_to_exact_players(self) -> None:
         events = []
         for slot in range(1, 13):
@@ -519,6 +535,8 @@ class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("chat", command_names)
         self.assertIn("chat-stop", command_names)
         self.assertIn("watch", command_names)
+        self.assertIn("companion-pair", command_names)
+        self.assertIn("companion-disable", command_names)
         self.assertNotIn("watchtest", command_names)
 
     def test_match_commands_accept_screenshots(self) -> None:
@@ -851,6 +869,79 @@ class FakeScoutLiveClient:
 
 
 class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_live_stream_refreshes_unavailable_broadcast_url(self) -> None:
+        snapshot = LiveMatchSnapshot(123, 0, ())
+
+        class RefreshingAPI(FakeScoutAPI):
+            async def get_live_broadcast_url(self, match_id: int) -> str:
+                self.broadcast_url_calls += 1
+                return f"https://relay.example.test/match/{match_id}/{self.broadcast_url_calls}"
+
+        class RefreshingLiveClient:
+            def __init__(self) -> None:
+                self.urls: list[str] = []
+
+            async def stream_match_snapshots(self, _match_id: int, url: str):
+                self.urls.append(url)
+                if len(self.urls) == 1:
+                    raise LiveDemoUnavailableError()
+                yield snapshot
+
+        api = RefreshingAPI()
+        live_client = RefreshingLiveClient()
+        service = DeadlockService(api, live_client)  # type: ignore[arg-type]
+
+        received = [item async for item in service.stream_live_match(123)]
+
+        self.assertEqual(received, [snapshot])
+        self.assertEqual(api.broadcast_url_calls, 2)
+        self.assertEqual(
+            live_client.urls,
+            [
+                "https://relay.example.test/match/123/1",
+                "https://relay.example.test/match/123/2",
+            ],
+        )
+
+    async def test_companion_waits_for_delayed_demo_then_opens_watch(self) -> None:
+        snapshot = LiveMatchSnapshot(123, 0, ())
+
+        class DelayedDemoService:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.invalidated: list[int] = []
+
+            def stream_live_match(self, _match_id: int):
+                async def generate():
+                    self.calls += 1
+                    if self.calls == 1:
+                        raise LiveDemoUnavailableError()
+                    yield snapshot
+
+                return generate()
+
+            async def invalidate_broadcast_url(self, match_id: int) -> None:
+                self.invalidated.append(match_id)
+
+        service = DelayedDemoService()
+        cog = object.__new__(DeadlockCog)
+        cog.service = service
+        notice = SimpleNamespace(edit=AsyncMock())
+        with (
+            patch(
+                "duckies_bot.cogs.deadlock._COMPANION_DEMO_RETRY_DELAYS",
+                (0.0,),
+            ),
+            patch("duckies_bot.cogs.deadlock.asyncio.sleep", new=AsyncMock()),
+        ):
+            stream, received = await cog._wait_for_companion_demo(123, notice)
+
+        self.assertEqual(received, snapshot)
+        self.assertEqual(service.calls, 2)
+        self.assertEqual(service.invalidated, [123])
+        notice.edit.assert_awaited_once()
+        await stream.aclose()
+
     async def test_match_id_token_resolves_numeric_and_top_200_values(self) -> None:
         api = FakeScoutAPI()
         service = DeadlockService(api)  # type: ignore[arg-type]

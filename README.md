@@ -37,6 +37,9 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   match-ended states instead of silently freezing. A 45-second event inactivity
   watchdog also recovers parser connections that remain open after Valve stops
   sending frames.
+- Companion-triggered watches tolerate the normal Source TV startup delay. If
+  Valve reports `Demo not available`, the bot keeps the connecting notice,
+  clears the cached broadcast URL, and retries for several minutes.
 - Valve broadcast URLs are fetched once per match and cached in SQLite for six
   hours, including across bot restarts. Live and scouting lookups reuse the URL
   instead of repeatedly calling Deadlock API. Chat startup currently makes one
@@ -81,6 +84,83 @@ access.
 4. Start the Deadlock live parser with `docker compose up -d`.
 5. Run `python main.py`.
 
+## Deadlock companion (first slice)
+
+The companion watches Deadlock's local Source 2 console log and reports a new
+match ID as soon as the game writes its connection or lobby line. It is
+read-only: it does not inspect game memory, inject code, or intercept network
+traffic.
+
+1. Add `-condebug` to Deadlock's Steam launch options.
+2. Install this project with `python -m pip install -e .`.
+3. Run `duckies-companion --launch` to start Deadlock with the required flag
+   and keep the companion watching in the same process.
+
+If Deadlock is already running with logging enabled, use `duckies-companion`
+without `--launch`. The launcher calls Steam directly as
+`steam -applaunch 1422450 -condebug`; it does not edit Deadlock files or your
+global Steam launch options. Use `--steam-path` only if Steam itself cannot be
+found automatically.
+
+Steam and custom library locations are detected automatically on Windows and
+Linux. Use `--game-folder` or `--log-path` only when automatic discovery cannot
+find the install. By default, each detected match is printed as one JSON line:
+
+```json
+{"match_id": 100141930, "detected_at": "...", "source": "deadlock-console"}
+```
+
+The bot includes the authenticated receiver. In Discord, run
+`/deadlock companion-pair` in the channel that should receive automatic watches,
+or select another channel. The ephemeral response contains a one-time token and
+the exact PowerShell commands for the gaming PC. Pairing again rotates the old
+token; `/deadlock companion-disable` revokes it. Only token hashes are stored.
+
+`python main.py` starts the receiver on `127.0.0.1:8080` by default. Keep that
+port private and place an HTTPS reverse proxy in front of it. Set
+`COMPANION_PUBLIC_URL=https://companion.example.com` on the VPS after the proxy
+is ready. See `docs/companion-vps.md` for the Ubuntu/Nginx handoff.
+
+Run `duckies-companion --help` for path overrides and one-shot mode. The
+companion intentionally begins at the end of an existing log, preventing a
+completed match from being submitted as live when it starts.
+
+### Simple desktop UI
+
+Launch the window with:
+
+```powershell
+duckies-companion-ui
+```
+
+The UI provides:
+
+- a manual Steam `steamapps` folder field and directory browser;
+- an additional launch-options field;
+- companion endpoint and masked pairing-token fields;
+- a **Play Deadlock** button; and
+- live detection and delivery status.
+
+The selected Steamapps path should directly contain `common/Deadlock`. The Play
+button starts Steam with `-applaunch 1422450 -condebug` and appends the parsed
+additional options. Arguments are passed directly to Steam without a command
+shell. Settings are saved in the current user's local application-data folder,
+so the pairing token should still be treated like a password. The same window
+continues monitoring after Deadlock exits; pressing Play again relaunches the
+game while keeping that monitor active.
+
+To build a standalone Windows executable that does not require Python on the
+target PC:
+
+```powershell
+python -m pip install -r requirements-companion-build.txt
+powershell -ExecutionPolicy Bypass -File scripts/build_companion.ps1
+```
+
+The distributable is written to `dist\DuckiesCompanion.exe`. It is a windowed,
+single-file build with the Duckies app icon; copy that one executable to another
+Windows PC and run it.
+
 Optional settings:
 
 - `TARKOV_API_URL` defaults to `https://json.tarkov.dev`.
@@ -90,6 +170,9 @@ Optional settings:
 - `DEADLOCK_SCOUT_TEMPLATE_PATH` defaults to
   `data/deadlock_scout_template.json`.
 - `DATABASE_PATH` defaults to `data/duckies.sqlite3` and stores Steam links.
+- `COMPANION_API_HOST` defaults to `127.0.0.1` so the receiver is private.
+- `COMPANION_API_PORT` defaults to `8080`.
+- `COMPANION_PUBLIC_URL` is the public HTTPS origin shown by the pairing command.
 - `HTTP_TIMEOUT_SECONDS` defaults to `30` because the first dataset download is large.
 
 The client caches the assembled PvE dataset for five minutes, uses ETags for
