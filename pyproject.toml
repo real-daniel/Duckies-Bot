@@ -16,6 +16,10 @@ dependencies = [
     "Pillow>=10,<12",
 ]
 
+[project.scripts]
+duckies-companion = "duckies_companion.app:main"
+duckies-companion-ui = "duckies_companion.ui:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

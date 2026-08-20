@@ -16,6 +16,9 @@ class SettingsTests(unittest.TestCase):
             "data/deadlock_scout_template.json",
         )
         self.assertEqual(settings.database_path, "data/duckies.sqlite3")
+        self.assertEqual(settings.companion_api_host, "127.0.0.1")
+        self.assertEqual(settings.companion_api_port, 8080)
+        self.assertIsNone(settings.companion_public_url)
         self.assertEqual(settings.http_timeout_seconds, 30.0)
         self.assertIsNone(settings.discord_guild_id)
 
@@ -34,3 +37,9 @@ class SettingsTests(unittest.TestCase):
             Settings(discord_token="token", deadlock_scout_template_path=" ")
         with self.assertRaises(ValueError):
             Settings(discord_token="token", database_path=" ")
+        with self.assertRaises(ValueError):
+            Settings(discord_token="token", companion_api_host=" ")
+        with self.assertRaises(ValueError):
+            Settings(discord_token="token", companion_api_port=0)
+        with self.assertRaises(ValueError):
+            Settings(discord_token="token", companion_public_url="http://example.test")

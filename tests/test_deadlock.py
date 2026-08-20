@@ -519,6 +519,8 @@ class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("chat", command_names)
         self.assertIn("chat-stop", command_names)
         self.assertIn("watch", command_names)
+        self.assertIn("companion-pair", command_names)
+        self.assertIn("companion-disable", command_names)
         self.assertNotIn("watchtest", command_names)
 
     def test_match_commands_accept_screenshots(self) -> None:
