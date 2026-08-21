@@ -1,11 +1,12 @@
 """Tests for local Deadlock match detection."""
 
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch, sentinel
 import tempfile
 import unittest
 
-from duckies_companion.app import report_match_with_retries
+from duckies_companion.app import report_match, report_match_with_retries
 from duckies_companion.detector import extract_match_id
 from duckies_companion.launcher import (
     SteamNotFoundError,
@@ -121,6 +122,28 @@ class DeadlockLauncherTests(unittest.TestCase):
 
 
 class CompanionDeliveryTests(unittest.TestCase):
+    def test_uses_system_trust_store_for_https_delivery(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = SimpleNamespace(status=202)
+
+        with (
+            patch(
+                "duckies_companion.app._system_https_context",
+                return_value=sentinel.ssl_context,
+            ),
+            patch(
+                "duckies_companion.app.urllib.request.urlopen",
+                return_value=response,
+            ) as urlopen,
+        ):
+            report_match(
+                100141930,
+                "https://example.test/v1/companion/matches",
+                "token",
+            )
+
+        self.assertIs(urlopen.call_args.kwargs["context"], sentinel.ssl_context)
+
     def test_retries_temporary_delivery_errors(self) -> None:
         with (
             patch(

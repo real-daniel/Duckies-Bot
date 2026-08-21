@@ -7,10 +7,13 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+import ssl
 import sys
 import time
 import urllib.error
 import urllib.request
+
+import truststore
 
 from .launcher import SteamNotFoundError, launch_deadlock
 from .steam import find_deadlock_console_log
@@ -60,13 +63,23 @@ def report_match(match_id: int, endpoint: str | None, token: str | None) -> None
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(
+            request,
+            timeout=15,
+            context=_system_https_context(),
+        ) as response:
             if not 200 <= response.status < 300:
                 raise RuntimeError(f"Companion endpoint returned HTTP {response.status}.")
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"Companion endpoint returned HTTP {exc.code}.") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not reach the companion endpoint: {exc.reason}") from exc
+
+
+def _system_https_context() -> ssl.SSLContext:
+    """Create a verified TLS context backed by the operating-system trust store."""
+
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
 
 def report_match_with_retries(
