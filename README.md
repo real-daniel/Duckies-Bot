@@ -38,8 +38,9 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   watchdog also recovers parser connections that remain open after Valve stops
   sending frames.
 - Companion-triggered watches tolerate the normal Source TV startup delay. If
-  Valve reports `Demo not available`, the bot keeps the connecting notice,
-  clears the cached broadcast URL, and retries for several minutes.
+  Valve reports `Demo not available` or the stream opens without producing a
+  player snapshot, the bot keeps the connecting notice, clears the cached
+  broadcast URL, and retries for up to five minutes.
 - Valve broadcast URLs are fetched once per match and cached in SQLite for six
   hours, including across bot restarts. Live and scouting lookups reuse the URL
   instead of repeatedly calling Deadlock API. Chat startup currently makes one

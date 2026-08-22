@@ -1,5 +1,6 @@
 """Tests for Deadlock active-match lookup."""
 
+import asyncio
 from typing import Any
 from types import SimpleNamespace
 import unittest
@@ -941,6 +942,120 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.invalidated, [123])
         notice.edit.assert_awaited_once()
         await stream.aclose()
+
+    async def test_companion_retries_quiet_broadcast_then_opens_watch(self) -> None:
+        snapshot = LiveMatchSnapshot(123, 0, ())
+
+        class QuietDemoService:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.invalidated: list[int] = []
+
+            def stream_live_match(self, _match_id: int):
+                async def generate():
+                    self.calls += 1
+                    if self.calls == 1:
+                        raise TimeoutError
+                    yield snapshot
+
+                return generate()
+
+            async def invalidate_broadcast_url(self, match_id: int) -> None:
+                self.invalidated.append(match_id)
+
+        service = QuietDemoService()
+        cog = object.__new__(DeadlockCog)
+        cog.service = service
+        notice = SimpleNamespace(edit=AsyncMock())
+        with (
+            patch(
+                "duckies_bot.cogs.deadlock._COMPANION_DEMO_RETRY_DELAYS",
+                (0.0,),
+            ),
+            patch("duckies_bot.cogs.deadlock.asyncio.sleep", new=AsyncMock()),
+        ):
+            stream, received = await cog._wait_for_companion_demo(123, notice)
+
+        self.assertEqual(received, snapshot)
+        self.assertEqual(service.calls, 2)
+        self.assertEqual(service.invalidated, [123])
+        notice.edit.assert_awaited_once()
+        self.assertIn("not ready yet", notice.edit.await_args.kwargs["content"])
+        await stream.aclose()
+
+    async def test_companion_quiet_broadcast_stops_after_retry_budget(self) -> None:
+        class QuietDemoService:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.invalidated: list[int] = []
+
+            def stream_live_match(self, _match_id: int):
+                async def generate():
+                    self.calls += 1
+                    raise TimeoutError
+                    yield  # pragma: no cover - keeps this an async generator
+
+                return generate()
+
+            async def invalidate_broadcast_url(self, match_id: int) -> None:
+                self.invalidated.append(match_id)
+
+        service = QuietDemoService()
+        cog = object.__new__(DeadlockCog)
+        cog.service = service
+        notice = SimpleNamespace(edit=AsyncMock())
+        with (
+            patch(
+                "duckies_bot.cogs.deadlock._COMPANION_DEMO_RETRY_DELAYS",
+                (0.0,),
+            ),
+            patch("duckies_bot.cogs.deadlock.asyncio.sleep", new=AsyncMock()),
+        ):
+            with self.assertRaises(TimeoutError):
+                await cog._wait_for_companion_demo(123, notice)
+
+        self.assertEqual(service.calls, 2)
+        self.assertEqual(service.invalidated, [123, 123])
+        notice.edit.assert_awaited_once()
+
+    async def test_companion_quiet_broadcast_obeys_overall_startup_deadline(self) -> None:
+        class NeverReadyService:
+            def __init__(self) -> None:
+                self.invalidated: list[int] = []
+
+            def stream_live_match(self, _match_id: int):
+                async def generate():
+                    await asyncio.Event().wait()
+                    yield  # pragma: no cover - keeps this an async generator
+
+                return generate()
+
+            async def invalidate_broadcast_url(self, match_id: int) -> None:
+                self.invalidated.append(match_id)
+
+        service = NeverReadyService()
+        cog = object.__new__(DeadlockCog)
+        cog.service = service
+        notice = SimpleNamespace(edit=AsyncMock())
+        with (
+            patch(
+                "duckies_bot.cogs.deadlock._COMPANION_DEMO_RETRY_DELAYS",
+                (10.0,),
+            ),
+            patch(
+                "duckies_bot.cogs.deadlock._COMPANION_DEMO_ATTEMPT_TIMEOUT_SECONDS",
+                1.0,
+            ),
+            patch(
+                "duckies_bot.cogs.deadlock._COMPANION_DEMO_STARTUP_TIMEOUT_SECONDS",
+                0.01,
+            ),
+        ):
+            with self.assertRaises(TimeoutError):
+                await cog._wait_for_companion_demo(123, notice)
+
+        self.assertEqual(service.invalidated, [123])
+        notice.edit.assert_not_awaited()
 
     async def test_match_id_token_resolves_numeric_and_top_200_values(self) -> None:
         api = FakeScoutAPI()
