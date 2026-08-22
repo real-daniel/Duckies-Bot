@@ -71,6 +71,8 @@ _WATCH_RECONNECT_DELAYS = (3.0, 8.0, 15.0, 30.0)
 _WATCH_IDLE_SECONDS = 45.0
 _WATCH_END_CONFIRMATIONS = 2
 _COMPANION_DEMO_RETRY_DELAYS = (10.0, 20.0, 30.0, 45.0, 60.0)
+_COMPANION_DEMO_ATTEMPT_TIMEOUT_SECONDS = 45.0
+_COMPANION_DEMO_STARTUP_TIMEOUT_SECONDS = 5 * 60.0
 
 
 class DeadlockCog(commands.Cog):
@@ -535,7 +537,10 @@ class DeadlockCog(commands.Cog):
             if stream is not None:
                 await stream.aclose()
             await notice.edit(
-                content=f"Companion detected match `{match_id}`, but the live broadcast timed out."
+                content=(
+                    f"Companion detected match `{match_id}`, but the delayed live broadcast "
+                    "did not become ready within five minutes."
+                )
             )
             return
         except (DeadlockAPIError, StopAsyncIteration) as exc:
@@ -592,25 +597,81 @@ class DeadlockCog(commands.Cog):
         notice: discord.Message,
     ) -> tuple[AsyncIterator[LiveMatchSnapshot], LiveMatchSnapshot]:
         attempts = len(_COMPANION_DEMO_RETRY_DELAYS) + 1
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _COMPANION_DEMO_STARTUP_TIMEOUT_SECONDS
         for attempt in range(attempts):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                LOGGER.warning(
+                    "Companion match %d startup exceeded %.0f-second deadline before attempt %d/%d",
+                    match_id,
+                    _COMPANION_DEMO_STARTUP_TIMEOUT_SECONDS,
+                    attempt + 1,
+                    attempts,
+                )
+                raise TimeoutError
+
+            attempt_timeout = min(
+                _COMPANION_DEMO_ATTEMPT_TIMEOUT_SECONDS,
+                remaining,
+            )
+            LOGGER.info(
+                "Companion match %d opening live broadcast (attempt %d/%d, %.0fs remaining)",
+                match_id,
+                attempt + 1,
+                attempts,
+                remaining,
+            )
             stream = self.service.stream_live_match(match_id)
             try:
-                async with asyncio.timeout(45):
+                async with asyncio.timeout(attempt_timeout):
                     return stream, await anext(stream)
-            except LiveDemoUnavailableError:
+            except (LiveDemoUnavailableError, TimeoutError) as exc:
                 await stream.aclose()
                 await self.service.invalidate_broadcast_url(match_id)
-                if attempt >= len(_COMPANION_DEMO_RETRY_DELAYS):
+                reason = (
+                    "Valve reported demo unavailable"
+                    if isinstance(exc, LiveDemoUnavailableError)
+                    else "no player snapshot arrived before the attempt timeout"
+                )
+                remaining = deadline - loop.time()
+                if attempt >= len(_COMPANION_DEMO_RETRY_DELAYS) or remaining <= 0:
+                    LOGGER.warning(
+                        "Companion match %d startup failed after attempt %d/%d: %s",
+                        match_id,
+                        attempt + 1,
+                        attempts,
+                        reason,
+                    )
                     raise
-                delay = _COMPANION_DEMO_RETRY_DELAYS[attempt]
+                delay = min(_COMPANION_DEMO_RETRY_DELAYS[attempt], remaining)
+                LOGGER.info(
+                    "Companion match %d startup attempt %d/%d failed: %s; "
+                    "broadcast URL invalidated, retrying in %.0f seconds",
+                    match_id,
+                    attempt + 1,
+                    attempts,
+                    reason,
+                    delay,
+                )
                 await notice.edit(
                     content=(
-                        f"Companion detected match `{match_id}`. Valve's live broadcast "
-                        f"endpoint is unavailable; refreshing it and retrying in {int(delay)} seconds "
+                        f"Companion detected match `{match_id}`. The delayed live broadcast "
+                        f"is not ready yet; refreshing it and retrying in {int(delay)} seconds "
                         f"({attempt + 2}/{attempts})…"
                     )
                 )
                 await asyncio.sleep(delay)
+            except DeadlockAPIError as exc:
+                await stream.aclose()
+                LOGGER.warning(
+                    "Companion match %d startup attempt %d/%d failed with a parser/API error: %s",
+                    match_id,
+                    attempt + 1,
+                    attempts,
+                    exc.user_message,
+                )
+                raise
             except BaseException:
                 await stream.aclose()
                 raise
