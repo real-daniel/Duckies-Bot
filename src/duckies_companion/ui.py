@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .app import report_match_with_retries
 from .launcher import SteamNotFoundError, launch_deadlock, split_launch_options
+from .process import is_deadlock_running
 from .settings import (
     CompanionSettings,
     console_log_from_steamapps,
@@ -30,7 +31,9 @@ class CompanionWindow:
         self.root.geometry("620x390")
         self.root.minsize(540, 360)
         self._stop = threading.Event()
+        self._monitor_stop = threading.Event()
         self._monitor_thread: threading.Thread | None = None
+        self._monitored_log_path: Path | None = None
 
         saved = load_settings()
         self.steamapps = tk.StringVar(value=saved.steamapps_path)
@@ -41,10 +44,18 @@ class CompanionWindow:
         self.token = tk.StringVar(
             value=saved.token or os.getenv("DUCKIES_COMPANION_TOKEN", "")
         )
+        self._report_endpoint = self.endpoint.get().strip().rstrip("/") or None
+        self._report_token = self.token.get().strip() or None
+        self.endpoint.trace_add("write", self._sync_delivery_settings)
+        self.token.trace_add("write", self._sync_delivery_settings)
         self.status = tk.StringVar(value="Ready")
 
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+        # Monitoring belongs to the companion window, not to the way Deadlock
+        # is launched. This also supports mod managers and desktop shortcuts as
+        # long as they start the game with -condebug enabled.
+        self.root.after(0, self._start_monitoring)
 
     def _set_window_icon(self) -> None:
         icon_path = _asset_path("duckies_companion.png")
@@ -116,6 +127,7 @@ class CompanionWindow:
         )
         if selected:
             self.steamapps.set(selected)
+            self._start_monitoring(show_error=True)
 
     def _current_settings(self) -> CompanionSettings:
         return CompanionSettings(
@@ -126,9 +138,6 @@ class CompanionWindow:
         )
 
     def _play(self) -> None:
-        already_monitoring = (
-            self._monitor_thread is not None and self._monitor_thread.is_alive()
-        )
         settings = self._current_settings()
         try:
             steamapps = validate_steamapps_path(settings.steamapps_path)
@@ -138,50 +147,114 @@ class CompanionWindow:
             if settings.endpoint and not settings.endpoint.casefold().startswith("https://"):
                 raise ValueError("The companion endpoint must use HTTPS.")
             save_settings(settings)
-            tailer = None
-            if not already_monitoring:
-                tailer = MatchLogTailer(console_log_from_steamapps(steamapps))
-                tailer.read_available()
+            # Establish the tail position before asking Steam to launch. When
+            # monitoring is already active this simply refreshes delivery
+            # settings (or switches to a newly selected Steam library).
+            self._start_monitoring(settings=settings, steamapps=steamapps)
             launch_deadlock(additional_args=arguments)
         except (OSError, SteamNotFoundError, RuntimeError, ValueError) as exc:
             messagebox.showerror("Could not launch Deadlock", str(exc), parent=self.root)
-            self.status.set("Launch failed")
+            if self._monitor_thread is not None and self._monitor_thread.is_alive():
+                self.status.set("Launch failed — still monitoring for matches")
+            else:
+                self.status.set("Launch failed")
             return
 
         self.status.set("Deadlock launched — waiting for a match")
+
+    def _start_monitoring(
+        self,
+        *,
+        settings: CompanionSettings | None = None,
+        steamapps: Path | None = None,
+        show_error: bool = False,
+    ) -> bool:
+        settings = settings or self._current_settings()
+        try:
+            steamapps = steamapps or validate_steamapps_path(settings.steamapps_path)
+        except ValueError as exc:
+            self.status.set("Select your Steamapps folder to start monitoring")
+            if show_error:
+                messagebox.showerror("Could not monitor Deadlock", str(exc), parent=self.root)
+            return False
+
+        log_path = console_log_from_steamapps(steamapps)
+        already_monitoring = (
+            self._monitor_thread is not None
+            and self._monitor_thread.is_alive()
+            and self._monitored_log_path == log_path
+        )
         if already_monitoring:
-            return
-        assert tailer is not None
+            return True
+
+        if self._monitor_thread is not None and self._monitor_thread.is_alive():
+            self._monitor_stop.set()
+
+        tailer = MatchLogTailer(log_path)
+        # Ignore matches already present when the companion opens, but consume
+        # a log created later from byte zero.
+        tailer.read_available()
+        monitor_stop = threading.Event()
+        self._monitor_stop = monitor_stop
+        self._monitored_log_path = log_path
         self._monitor_thread = threading.Thread(
             target=self._monitor,
-            args=(tailer, settings.endpoint or None, settings.token or None),
+            args=(tailer, monitor_stop),
             name="duckies-companion-monitor",
             daemon=True,
         )
         self._monitor_thread.start()
+        self.status.set("Waiting for Deadlock to start")
+        return True
 
     def _monitor(
         self,
         tailer: MatchLogTailer,
-        endpoint: str | None,
-        token: str | None,
+        monitor_stop: threading.Event,
     ) -> None:
-        while not self._stop.wait(tailer.poll_seconds):
-            for match_id in tailer.read_available():
-                self._set_status(f"Match {match_id} detected — reporting")
-                try:
-                    report_match_with_retries(match_id, endpoint, token)
-                except (RuntimeError, ValueError) as exc:
-                    self._set_status(f"Match {match_id} could not be reported: {exc}")
+        was_running: bool | None = None
+        while not self._stop.is_set():
+            running = is_deadlock_running()
+            if running != was_running:
+                if running:
+                    self._set_status("Deadlock detected — waiting for a match")
                 else:
-                    destination = "sent to Discord" if endpoint else "detected locally"
-                    self._set_status(f"Match {match_id} {destination}")
+                    self._set_status("Deadlock is not running — monitoring paused")
+                was_running = running
+
+            if running:
+                for match_id in tailer.read_available():
+                    self._set_status(f"Match {match_id} detected — reporting")
+                    settings = self._current_delivery_settings()
+                    try:
+                        report_match_with_retries(match_id, *settings)
+                    except (RuntimeError, ValueError) as exc:
+                        self._set_status(f"Match {match_id} could not be reported: {exc}")
+                    else:
+                        destination = "sent to Discord" if settings[0] else "detected locally"
+                        self._set_status(f"Match {match_id} {destination}")
+
+            if monitor_stop.wait(max(tailer.poll_seconds, 1.0)):
+                return
+
+    def _current_delivery_settings(self) -> tuple[str | None, str | None]:
+        return self._report_endpoint, self._report_token
+
+    def _sync_delivery_settings(self, *_args: object) -> None:
+        """Keep a thread-safe snapshot of the UI's delivery fields."""
+
+        self._report_endpoint = self.endpoint.get().strip().rstrip("/") or None
+        self._report_token = self.token.get().strip() or None
 
     def _set_status(self, value: str) -> None:
-        self.root.after(0, self.status.set, value)
+        try:
+            self.root.after(0, self.status.set, value)
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _close(self) -> None:
         self._stop.set()
+        self._monitor_stop.set()
         try:
             save_settings(self._current_settings())
         except OSError:
