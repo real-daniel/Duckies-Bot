@@ -146,9 +146,11 @@ The selected Steamapps path should directly contain `common/Deadlock`. The Play
 button starts Steam with `-applaunch 1422450 -condebug` and appends the parsed
 additional options. Arguments are passed directly to Steam without a command
 shell. Settings are saved in the current user's local application-data folder,
-so the pairing token should still be treated like a password. The same window
-continues monitoring after Deadlock exits; pressing Play again relaunches the
-game while keeping that monitor active.
+so the pairing token should still be treated like a password. While the window
+is open, the companion waits for `deadlock.exe`, monitors `console.log` only
+while that process is running, and pauses again when the game closes. This also
+works when the game is started through a mod launcher or shortcut, provided it
+uses `-condebug`.
 
 To build a standalone Windows executable that does not require Python on the
 target PC:

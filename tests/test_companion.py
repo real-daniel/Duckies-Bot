@@ -3,6 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, sentinel
+import threading
 import tempfile
 import unittest
 
@@ -13,6 +14,7 @@ from duckies_companion.launcher import (
     launch_deadlock,
     split_launch_options,
 )
+from duckies_companion.process import is_deadlock_running
 from duckies_companion.settings import (
     CompanionSettings,
     console_log_from_steamapps,
@@ -22,6 +24,7 @@ from duckies_companion.settings import (
 )
 from duckies_companion.steam import DEADLOCK_APP_ID, find_deadlock_console_log
 from duckies_companion.tailer import MatchLogTailer
+from duckies_companion.ui import CompanionWindow
 
 
 class MatchDetectorTests(unittest.TestCase):
@@ -121,6 +124,21 @@ class DeadlockLauncherTests(unittest.TestCase):
         self.assertNotIn("shell", popen.call_args.kwargs)
 
 
+class DeadlockProcessTests(unittest.TestCase):
+    def test_detects_deadlock_executable_on_windows(self) -> None:
+        result = SimpleNamespace(
+            returncode=0,
+            stdout='"deadlock.exe","3904","Console","1","2,000 K"\n',
+        )
+        with (
+            patch("duckies_companion.process.sys.platform", "win32"),
+            patch("duckies_companion.process.subprocess.run", return_value=result) as run,
+        ):
+            self.assertTrue(is_deadlock_running())
+
+        self.assertIn("IMAGENAME eq deadlock.exe", run.call_args.args[0])
+
+
 class CompanionDeliveryTests(unittest.TestCase):
     def test_uses_system_trust_store_for_https_delivery(self) -> None:
         response = MagicMock()
@@ -192,3 +210,30 @@ class CompanionSettingsTests(unittest.TestCase):
                 console_log_from_steamapps(steamapps),
                 steamapps / "common" / "Deadlock" / "game" / "citadel" / "console.log",
             )
+
+
+class CompanionWindowTests(unittest.TestCase):
+    def test_reads_console_only_while_deadlock_is_running(self) -> None:
+        window = CompanionWindow.__new__(CompanionWindow)
+        window._stop = threading.Event()
+        window._set_status = MagicMock()
+        window._current_delivery_settings = MagicMock(return_value=(None, None))
+        tailer = MagicMock(poll_seconds=0.01)
+        tailer.read_available.return_value = (100141930,)
+        monitor_stop = MagicMock()
+        monitor_stop.wait.side_effect = (False, False, True)
+
+        with (
+            patch(
+                "duckies_companion.ui.is_deadlock_running",
+                side_effect=(False, True, False),
+            ),
+            patch("duckies_companion.ui.report_match_with_retries") as report,
+        ):
+            window._monitor(tailer, monitor_stop)
+
+        tailer.read_available.assert_called_once_with()
+        report.assert_called_once_with(100141930, None, None)
+        statuses = [call.args[0] for call in window._set_status.call_args_list]
+        self.assertIn("Deadlock detected — monitoring console.log", statuses)
+        self.assertIn("Deadlock is closed — waiting for deadlock.exe", statuses)
