@@ -12,6 +12,7 @@ from duckies_bot.features.deadlock.models import (  # noqa: E402
     ItemSummary,
     LiveMatchSnapshot,
     LivePlayer,
+    StatueBuff,
 )
 from duckies_bot.features.deadlock.scoreboard import (  # noqa: E402
     render_discord_scoreboard,
@@ -66,6 +67,19 @@ def main() -> None:
             objective_damage=1_100 + index * 930,
             hero_healing=500 + index * 1_840,
             upgrades=tuple(range(index * 10, index * 10 + 10 + index % 5)),
+            statue_buffs=tuple(
+                StatueBuff(stat, tier, 1_000_000 + index * 100 + offset, offset)
+                for offset, (stat, tier) in enumerate(
+                    (
+                        ("health", 1),
+                        ("weapon_power", 2),
+                        ("spirit", 2),
+                        ("fire_rate", 3),
+                        ("ammo", 1),
+                        ("cooldown", 2),
+                    )[: 1 + index % 6]
+                )
+            ),
         )
         for index, name in enumerate(NAMES, start=1)
     )
@@ -101,7 +115,7 @@ def main() -> None:
         render_discord_scoreboard_page(snapshot, highlighted_account_id=800_010)
     )
     print(discord_output)
-    for page in ("combat", "economy", "builds", "player"):
+    for page in ("combat", "economy", "builds", "statues", "player"):
         page_output = ROOT / "data" / f"deadlock_watchtest_{page}_preview.png"
         page_output.write_bytes(
             render_discord_scoreboard_page(

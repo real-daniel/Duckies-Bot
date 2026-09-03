@@ -29,6 +29,7 @@ from duckies_bot.features.deadlock.models import (
     PlayerRank,
     RankAsset,
     ScoutedPlayer,
+    StatueBuff,
 )
 from duckies_bot.providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
 from duckies_bot.providers.deadlock.client import DeadlockClient
@@ -347,6 +348,43 @@ class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player.health_regen, 3.5)
         self.assertTrue(player.ultimate_trained)
 
+    async def test_maps_statue_modifiers_to_pawns_and_deduplicates_them(self) -> None:
+        body = (
+            'event: statue_buff\n'
+            'data: {"parent":101,"entry_id":10,"serial_number":7,"modifier_subclass":305643471,'
+            '"stat":"health","tier":1,"game_time":40}\n\n'
+            'event: player_controller_entity_create\n'
+            'data: {"entity_index":1,"steam_id":1001,"steam_name":"Ducky",'
+            '"player_slot":1,"team":2,"pawn":101,"game_time":40}\n\n'
+            'event: tick_end\ndata: {"tick":1}\n\n'
+            'event: statue_buff\n'
+            'data: {"parent":101,"entry_id":10,"serial_number":7,"modifier_subclass":305643471,'
+            '"stat":"health","tier":1,"game_time":41}\n\n'
+            'event: statue_buff\n'
+            'data: {"parent":101,"entry_id":11,"serial_number":8,"modifier_subclass":2902074031,'
+            '"stat":"health","tier":3,"game_time":42}\n\n'
+            'event: player_controller_entity_update\n'
+            'data: {"steam_id":1001,"kills":2,"game_time":43}\n\n'
+            'event: end\ndata: {}\n\n'
+        )
+        client = DeadlockLiveClient(
+            session=FakeSSESession(FakeSSEResponse(body))
+        )  # type: ignore[arg-type]
+
+        snapshots = [
+            snapshot
+            async for snapshot in client.stream_match_snapshots(
+                123,
+                "https://relay.example.test/match/123",
+            )
+        ]
+
+        self.assertEqual(
+            [item.players[0].statue_buff_count for item in snapshots],
+            [1, 2, 2],
+        )
+        self.assertEqual(snapshots[-1].players[0].statue_tiers("health"), (1, 0, 1))
+
     async def test_collects_twelve_players_and_excludes_sourcetv(self) -> None:
         events = [
             'event: player_controller_entity_create\n'
@@ -604,6 +642,10 @@ class DeadlockFormatterTests(unittest.TestCase):
             hero_damage=20_000,
             objective_damage=4_500,
             upgrades=(101, 202),
+            statue_buffs=(
+                StatueBuff("health", 1, 305643471, 1),
+                StatueBuff("spirit", 2, 3992882918, 2),
+            ),
         )
         snapshot = LiveMatchSnapshot(
             98832895,
@@ -615,6 +657,7 @@ class DeadlockFormatterTests(unittest.TestCase):
         combat = build_watch_tab_embed(snapshot, "combat")
         economy = build_watch_tab_embed(snapshot, "economy")
         builds = build_watch_tab_embed(snapshot, "builds")
+        statues = build_watch_tab_embed(snapshot, "statues")
         timeline = build_watch_tab_embed(snapshot, "timeline", timeline=("A kill",))
         detail = build_watch_tab_embed(snapshot, "player", selected_account_id=1001)
 
@@ -622,6 +665,9 @@ class DeadlockFormatterTests(unittest.TestCase):
         self.assertIn("20.0k", combat.fields[0].value)
         self.assertIn("80", economy.fields[0].value)
         self.assertIn("101", builds.fields[0].value)
+        self.assertIn("Golden Statues", statues.title)
+        self.assertIn("HP `1/0/0`", statues.fields[0].value)
+        self.assertIn("Spirit `0/1/0`", statues.fields[0].value)
         self.assertIn("A kill", timeline.description)
         self.assertTrue(any(field.name == "Damage" for field in detail.fields))
 
@@ -1437,7 +1483,7 @@ class DeadlockWatchViewTests(unittest.IsolatedAsyncioTestCase):
                 for event in view.timeline
             )
         )
-        self.assertEqual(len(view.children), 6)
+        self.assertEqual(len(view.children), 7)
 
     async def test_timeline_names_added_and_removed_items(self) -> None:
         items = (

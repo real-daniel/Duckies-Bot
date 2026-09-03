@@ -23,7 +23,7 @@ class _WatchPlayerSelect(discord.ui.Select["DeadlockWatchView"]):
             max_values=1,
             options=parent._player_options(),
             custom_id="deadlock_watch:player",
-            row=1,
+            row=2,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -128,6 +128,21 @@ class DeadlockWatchView(discord.ui.View):
     ) -> None:
         del button
         await self._switch_tab(interaction, "builds")
+
+    @discord.ui.button(
+        label="Golden Statues",
+        style=discord.ButtonStyle.secondary,
+        custom_id="deadlock_watch:statues",
+        row=1,
+        emoji="🏆",
+    )
+    async def statues(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button["DeadlockWatchView"],
+    ) -> None:
+        del button
+        await self._switch_tab(interaction, "statues")
 
     @discord.ui.button(
         label="Timeline",
