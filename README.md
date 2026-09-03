@@ -68,7 +68,7 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   floors.
 - `/tarkov barter-profit top:<1-20>` ranks PvE trader barters by gross savings.
 - `/tarkov flips top:<1-20> include_task_locked:<true|false> pmc_level:<1-100>
-  high_liquidity_only:<true|false>` ranks items bought from traders and resold
+high_liquidity_only:<true|false>` ranks items bought from traders and resold
   on the PvE flea market. It can exclude task unlocks, estimate accessible
   loyalty levels from PMC level, and hide low-liquidity items.
 
@@ -108,7 +108,7 @@ Linux. Use `--game-folder` or `--log-path` only when automatic discovery cannot
 find the install. By default, each detected match is printed as one JSON line:
 
 ```json
-{"match_id": 100141930, "detected_at": "...", "source": "deadlock-console"}
+{ "match_id": 100141930, "detected_at": "...", "source": "deadlock-console" }
 ```
 
 The bot includes the authenticated receiver. In Discord, run

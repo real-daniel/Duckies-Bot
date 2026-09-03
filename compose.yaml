@@ -21,7 +21,9 @@ services:
         max-file: "3"
 
   deadlock-live-events:
-    image: ghcr.io/deadlock-api/deadlock-live-events:latest
+    build:
+      context: ./live-events
+    image: duckies/deadlock-live-events:statue-buffs
     restart: unless-stopped
     init: true
     environment:

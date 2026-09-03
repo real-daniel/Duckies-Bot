@@ -17,6 +17,7 @@ _AMBER = (245, 170, 58)
 _SAPPHIRE = (105, 160, 255)
 _TEXT = (255, 253, 244)
 _MUTED = (211, 214, 209)
+_GOLD = (244, 193, 72)
 
 
 def render_live_scoreboard(
@@ -176,6 +177,7 @@ def render_discord_scoreboard_page(
         "combat": "COMBAT",
         "economy": "ECONOMY",
         "builds": "BUILDS",
+        "statues": "GOLDEN STATUES",
         "timeline": "TIMELINE",
         "player": "PLAYER DETAILS",
     }
@@ -254,7 +256,11 @@ def _draw_discord_page_team(
     draw.text((left + 10, 120), _team_name(team).upper(), font=_font(32, bold=True), fill=color)
     draw.text(
         (right - 10, 127),
-        _compact(sum(player.net_worth for player in players)) + " SOULS",
+        (
+            "COUNTS: TIER 1 / 2 / 3"
+            if page == "statues"
+            else _compact(sum(player.net_worth for player in players)) + " SOULS"
+        ),
         font=_font(21, bold=True),
         fill=(*color, 235),
         anchor="ra",
@@ -297,9 +303,12 @@ def _draw_discord_page_team(
             hero_label = _fit_text(draw, hero_name, _font(20), 205)
             draw.text((left + 82, y + 42), hero_label, font=_font(20), fill=(*color, 245))
         if highlighted:
-            badge_x, badge_y = (
-                (left + 335, y + 17) if page == "builds" else (left + 306, y + 72)
-            )
+            if page == "builds":
+                badge_x, badge_y = left + 335, y + 17
+            elif page == "statues":
+                badge_x, badge_y = left + 306, y + 72
+            else:
+                badge_x, badge_y = left + 306, y + 72
             draw.text(
                 (badge_x, badge_y),
                 "YOU",
@@ -318,12 +327,18 @@ def _draw_discord_page_team(
             minutes = max((snapshot.game_time_seconds or 0) / 60, 1 / 60)
             primary = f"{_compact(player.net_worth)} SOULS   {player.net_worth / minutes:,.0f}/MIN"
             secondary = f"{player.last_hits} LAST HITS   {player.denies} DENIES   LANE {player.assigned_lane or '—'}"
-        else:
+        elif page == "builds":
             primary = f"{len(_ordered_inventory(snapshot, player))} ITEMS"
             secondary = "CURRENT LIVE INVENTORY"
-        draw.text((right - 12, y + 9), primary, font=_font(23, bold=True), fill=_TEXT, anchor="ra")
-        if page != "builds":
-            draw.text((right - 12, y + 48), secondary, font=_font(19), fill=_MUTED, anchor="ra")
+        else:
+            primary = secondary = ""
+        if page == "statues":
+            _draw_statue_details(draw, player, left + 306, y + 8)
+        else:
+            draw.text((right - 12, y + 9), primary, font=_font(23, bold=True), fill=_TEXT, anchor="ra")
+            if page != "builds":
+                draw.text((right - 12, y + 48), secondary, font=_font(19), fill=_MUTED, anchor="ra")
+            _draw_statue_badge(draw, left + 306, y + 57, player.statue_buff_count, size=15)
 
         if page == "builds":
             inventory = _ordered_inventory(snapshot, player)
@@ -381,6 +396,7 @@ def _draw_discord_player_page(
     player_name = _fit_text(draw, player.steam_name, _font(45, bold=True), 850)
     draw.text((255, 145), player_name, font=_font(45, bold=True), fill=_TEXT)
     draw.text((255, 207), hero_name, font=_font(31), fill=color)
+    _draw_statue_badge(draw, 990, 207, player.statue_buff_count, size=24)
     stats = (
         (255, 295, "SOULS", _compact(player.net_worth)),
         (485, 295, "K / D / A", f"{player.kills} / {player.deaths} / {player.assists}"),
@@ -478,6 +494,7 @@ def _draw_discord_team(
             f"{_compact(player.hero_healing)} HEAL"
         )
         draw.text((430, y + 13), stat_line, font=_font(17, bold=True), fill=_TEXT)
+        _draw_statue_badge(draw, 910, y + 10, player.statue_buff_count, size=18)
         inventory = _ordered_inventory(snapshot, player)
         mapped_inventory = bool(snapshot.items)
         for slot in range(12):
@@ -569,7 +586,8 @@ def _draw_team(
         (900, "PLYR DMG", "ra"),
         (1035, "OBJ DMG", "ra"),
         (1165, "HEALING", "ra"),
-        (1385, "ITEMS", "ma"),
+        (1220, "STATUES", "ma"),
+        (1405, "ITEMS", "ma"),
     )
     for x, label, anchor in headings:
         draw.text((x, header_top + 10), label, font=_font(14, bold=True), fill=_MUTED, anchor=anchor)
@@ -660,10 +678,12 @@ def _draw_player_row(
     for x, value, anchor in values:
         draw.text((x, y + 22), value, font=_font(18, bold=True), fill=_TEXT, anchor=anchor)
 
+    _draw_statue_badge(draw, 1190, y + 12, player.statue_buff_count, size=18)
+
     inventory = _ordered_inventory(snapshot, player)
     mapped_inventory = bool(snapshot.items)
     for slot in range(12):
-        left = 1250 + slot * 23
+        left = 1270 + slot * 22
         item = inventory[slot] if slot < len(inventory) else None
         active = item is not None or (not mapped_inventory and slot < len(player.upgrades))
         fill_color = _item_color(item) if item is not None else _upgrade_color(slot)
@@ -676,6 +696,72 @@ def _draw_player_row(
         )
         if item is not None and (icon := item_icons.get(item.item_id)) is not None:
             image.paste(icon, (left, y + 11), icon)
+
+
+def _draw_statue_badge(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    y: int,
+    count: int,
+    *,
+    size: int = 18,
+) -> None:
+    """Draw a tiny gold statue/pedestal and its permanent-buff count."""
+    center = x + size // 2
+    draw.ellipse(
+        (center - size // 5, y, center + size // 5, y + size * 2 // 5),
+        fill=(*_GOLD, 255),
+    )
+    draw.polygon(
+        (
+            (center - size // 3, y + size * 2 // 5),
+            (center + size // 3, y + size * 2 // 5),
+            (center + size // 4, y + size * 3 // 4),
+            (center - size // 4, y + size * 3 // 4),
+        ),
+        fill=(*_GOLD, 255),
+    )
+    draw.rounded_rectangle(
+        (x, y + size * 3 // 4, x + size, y + size),
+        max(1, size // 8),
+        fill=(196, 137, 37, 255),
+    )
+    draw.text(
+        (x + size + 4, y + size // 2),
+        str(count),
+        font=_font(max(12, size - 2), bold=True),
+        fill=_GOLD,
+        anchor="lm",
+    )
+
+
+def _draw_statue_details(
+    draw: ImageDraw.ImageDraw,
+    player: LivePlayer,
+    x: int,
+    y: int,
+) -> None:
+    _draw_statue_badge(draw, x, y + 20, player.statue_buff_count, size=19)
+    stats = (
+        ("HP", "health"),
+        ("WP", "weapon_power"),
+        ("SPI", "spirit"),
+        ("FIRE", "fire_rate"),
+        ("AMMO", "ammo"),
+        ("CD", "cooldown"),
+    )
+    for index, (label, stat) in enumerate(stats):
+        center = x + 52 + index * 36
+        tiers = player.statue_tiers(stat)
+        draw.text((center, y + 4), label, font=_font(9, bold=True), fill=_MUTED, anchor="ma")
+        draw.text(
+            (center, y + 29),
+            "/".join(str(value) for value in tiers),
+            font=_font(11, bold=True),
+            fill=_TEXT,
+            anchor="ma",
+        )
+        draw.text((center, y + 51), f"Σ{sum(tiers)}", font=_font(10), fill=_GOLD, anchor="ma")
 
 
 def _ordered_inventory(

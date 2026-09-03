@@ -92,6 +92,8 @@ def build_watch_tab_embed(
         return _build_watch_team_page(snapshot, "Economy", stream_status, _economy_line)
     if tab == "builds":
         return _build_watch_team_page(snapshot, "Builds", stream_status, _build_line)
+    if tab == "statues":
+        return _build_watch_team_page(snapshot, "Golden Statues", stream_status, _statue_line)
     if tab == "timeline":
         embed = _watch_shell(snapshot, "Timeline", stream_status)
         embed.description += "\n\n" + (
@@ -136,6 +138,7 @@ def _build_watch_team_page(
         "Combat": "Damage and healing reported by the live controller feed",
         "Economy": "Souls, lane farm, and rates from the current snapshot",
         "Builds": "Raw live upgrade IDs; names can be added from the cached item asset catalog",
+        "Golden Statues": "Permanent statue pickups from the live ActiveModifiers table; counts are tier 1/2/3",
     }[page_name]
     finish_embed(
         embed,
@@ -220,6 +223,29 @@ def _build_line(
     return f"**{name}** · Upgrades `{allocation}`"
 
 
+def _statue_line(
+    snapshot: LiveMatchSnapshot,
+    player: LivePlayer,
+    teammates: list[LivePlayer],
+) -> str:
+    del snapshot, teammates
+    name = discord.utils.escape_markdown(player.steam_name)[:24]
+    stats = (
+        ("HP", "health"),
+        ("WP", "weapon_power"),
+        ("Spirit", "spirit"),
+        ("Fire rate", "fire_rate"),
+        ("Ammo", "ammo"),
+        ("Cooldown", "cooldown"),
+    )
+    details = " · ".join(
+        f"{label} `{tier1}/{tier2}/{tier3}`"
+        for label, stat in stats
+        for tier1, tier2, tier3 in (player.statue_tiers(stat),)
+    )
+    return f"**{name}** · 🏆 **{player.statue_buff_count}**\n{details}"
+
+
 def _build_watch_player_page(
     snapshot: LiveMatchSnapshot,
     player: LivePlayer | None,
@@ -271,6 +297,11 @@ def _build_watch_player_page(
     embed.add_field(
         name=field_name("Live upgrade IDs"),
         value=_upgrade_allocation(player.upgrades),
+        inline=False,
+    )
+    embed.add_field(
+        name=field_name("Golden statues"),
+        value=_statue_line(snapshot, player, []),
         inline=False,
     )
     if hero and hero.icon_url:

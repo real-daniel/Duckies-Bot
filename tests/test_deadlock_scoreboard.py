@@ -10,6 +10,7 @@ from duckies_bot.features.deadlock.models import (
     ItemSummary,
     LiveMatchSnapshot,
     LivePlayer,
+    StatueBuff,
 )
 from duckies_bot.features.deadlock.scoreboard import (
     render_discord_scoreboard,
@@ -57,7 +58,15 @@ class DeadlockScoreboardTests(unittest.TestCase):
                 page,
                 selected_account_id=1001,
             )
-            for page in ("overview", "combat", "economy", "builds", "player", "timeline")
+            for page in (
+                "overview",
+                "combat",
+                "economy",
+                "builds",
+                "statues",
+                "player",
+                "timeline",
+            )
         }
 
         self.assertEqual(len(set(outputs.values())), len(outputs))
@@ -127,6 +136,10 @@ def _snapshot() -> LiveMatchSnapshot:
             objective_damage=index * 800,
             hero_healing=index * 500,
             upgrades=tuple(range(index + 8)),
+            statue_buffs=(
+                StatueBuff("health", 1, 305643471, index),
+                StatueBuff("spirit", 2, 3992882918, index + 20),
+            ),
         )
         for index in range(1, 13)
     )

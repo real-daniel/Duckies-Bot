@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import replace
 from typing import Any
 
 import aiohttp
@@ -14,6 +15,7 @@ from ...features.deadlock.models import (
     LiveKillEvent,
     LiveMatchSnapshot,
     LivePlayer,
+    StatueBuff,
 )
 from .errors import (
     DeadlockAPIError,
@@ -76,6 +78,10 @@ class DeadlockLiveClient:
         players: dict[int, LivePlayer] = {}
         pawn_accounts: dict[int, int] = {}
         controller_accounts: dict[int, int] = {}
+        statue_buffs_by_pawn: dict[
+            int,
+            dict[tuple[int | None, int | None, int], StatueBuff],
+        ] = {}
         game_time: float | None = None
         roster_ready = False
         last_snapshot: LiveMatchSnapshot | None = None
@@ -130,6 +136,38 @@ class DeadlockLiveClient:
                             last_snapshot = snapshot
                             yield snapshot
                         continue
+                    if event_name == "statue_buff":
+                        try:
+                            raw = json.loads(data)
+                        except (TypeError, json.JSONDecodeError) as exc:
+                            raise InvalidDeadlockResponseError() from exc
+                        if not isinstance(raw, Mapping):
+                            continue
+                        parsed = _parse_statue_buff(raw)
+                        if parsed is None:
+                            continue
+                        pawn_index, identity, buff = parsed
+                        pawn_buffs = statue_buffs_by_pawn.setdefault(pawn_index, {})
+                        if identity in pawn_buffs:
+                            continue
+                        pawn_buffs[identity] = buff
+                        account_id = pawn_accounts.get(pawn_index)
+                        if account_id is not None and account_id in players:
+                            players[account_id] = replace(
+                                players[account_id],
+                                statue_buffs=_ordered_statue_buffs(pawn_buffs),
+                            )
+                        game_time = _event_game_time(raw, game_time)
+                        if roster_ready and account_id is not None:
+                            snapshot = LiveMatchSnapshot(
+                                match_id=match_id,
+                                game_time_seconds=game_time,
+                                players=tuple(sorted(players.values(), key=_player_sort_key)),
+                            )
+                            if snapshot != last_snapshot:
+                                last_snapshot = snapshot
+                                yield snapshot
+                        continue
                     if event_name == "tick_end":
                         if players and not roster_ready:
                             roster_ready = True
@@ -161,6 +199,13 @@ class DeadlockLiveClient:
                     pawn_index = _optional_int(raw.get("pawn"))
                     if pawn_index is not None and pawn_index >= 0:
                         pawn_accounts[pawn_index] = player.account_id
+                        pawn_buffs = statue_buffs_by_pawn.get(pawn_index)
+                        if pawn_buffs:
+                            player = replace(
+                                player,
+                                statue_buffs=_ordered_statue_buffs(pawn_buffs),
+                            )
+                            players[player.account_id] = player
                     controller_index = _optional_int(raw.get("entity_index"))
                     if controller_index is not None and controller_index >= 0:
                         controller_accounts[controller_index] = player.account_id
@@ -284,6 +329,57 @@ def _parse_live_kill_event(
     )
 
 
+def _parse_statue_buff(
+    raw: Mapping[str, Any],
+) -> tuple[int, tuple[int | None, int | None, int], StatueBuff] | None:
+    parent = _optional_int(raw.get("parent"))
+    entry_id = _optional_int(raw.get("entry_id"))
+    modifier_subclass = _optional_int(raw.get("modifier_subclass"))
+    serial_number = _optional_int(raw.get("serial_number"))
+    stat = raw.get("stat")
+    tier = _optional_int(raw.get("tier"))
+    if (
+        parent is None
+        or parent < 0
+        or modifier_subclass is None
+        or not isinstance(stat, str)
+        or tier not in (1, 2, 3)
+    ):
+        return None
+    buff = StatueBuff(
+        stat=stat,
+        tier=tier,
+        modifier_subclass=modifier_subclass,
+        serial_number=serial_number,
+        entry_id=entry_id,
+    )
+    return parent, (entry_id, serial_number, modifier_subclass), buff
+
+
+def _ordered_statue_buffs(
+    buffs: Mapping[tuple[int | None, int | None, int], StatueBuff],
+) -> tuple[StatueBuff, ...]:
+    stat_order = {
+        "health": 0,
+        "weapon_power": 1,
+        "spirit": 2,
+        "fire_rate": 3,
+        "ammo": 4,
+        "cooldown": 5,
+    }
+    return tuple(
+        sorted(
+            buffs.values(),
+            key=lambda buff: (
+                stat_order.get(buff.stat, 99),
+                buff.tier,
+                buff.modifier_subclass,
+                buff.serial_number or -1,
+            ),
+        )
+    )
+
+
 def _event_game_time(
     raw: Mapping[str, Any],
     fallback: float | None,
@@ -386,6 +482,7 @@ def _parse_live_player(
             previous.ultimate_cooldown_end if previous else None,
         ),
         upgrades=upgrades,
+        statue_buffs=previous.statue_buffs if previous is not None else (),
     )
 
 

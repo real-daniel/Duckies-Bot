@@ -52,6 +52,17 @@ class ItemSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class StatueBuff:
+    """One permanent golden-statue modifier observed in the live demo."""
+
+    stat: str
+    tier: int
+    modifier_subclass: int
+    serial_number: int | None = None
+    entry_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class LivePlayer:
     account_id: int
     steam_name: str
@@ -73,6 +84,19 @@ class LivePlayer:
     ultimate_trained: bool | None = None
     ultimate_cooldown_end: float | None = None
     upgrades: tuple[int, ...] = ()
+    statue_buffs: tuple[StatueBuff, ...] = ()
+
+    @property
+    def statue_buff_count(self) -> int:
+        return len(self.statue_buffs)
+
+    def statue_tiers(self, stat: str) -> tuple[int, int, int]:
+        """Return this player's tier 1/2/3 pickup counts for one stat family."""
+        counts = tuple(
+            sum(buff.stat == stat and buff.tier == tier for buff in self.statue_buffs)
+            for tier in (1, 2, 3)
+        )
+        return counts[0], counts[1], counts[2]
 
 
 @dataclass(frozen=True, slots=True)
