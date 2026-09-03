@@ -155,6 +155,16 @@ class RankAsset:
 
 
 @dataclass(frozen=True, slots=True)
+class SteamProfile:
+    account_id: int
+    personaname: str
+    profile_url: str
+    avatar_url: str | None
+    country_code: str | None
+    matches_played_last_30_days: int
+
+
+@dataclass(frozen=True, slots=True)
 class HeroExperience:
     account_id: int
     hero_id: int
@@ -179,6 +189,23 @@ class PlayerHistory:
 class HeroRecord:
     experience: HeroExperience
     hero: HeroSummary | None
+
+
+@dataclass(frozen=True, slots=True)
+class PlayerLookup:
+    profile: SteamProfile
+    rank: PlayerRank | None
+    rank_name: str | None
+    recent_outcomes: tuple[str, ...]
+    total_matches: int
+    total_wins: int
+    top_heroes: tuple[HeroRecord, ...]
+
+    @property
+    def win_rate(self) -> float | None:
+        if self.total_matches <= 0:
+            return None
+        return self.total_wins / self.total_matches
 
 
 @dataclass(frozen=True, slots=True)

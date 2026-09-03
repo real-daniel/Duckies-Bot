@@ -9,6 +9,11 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   SteamID3, SteamID2, or numeric Steam profile URL.
 - `/steam show user:<optional>` shows the account used by account-aware commands.
 - `/steam unlink` removes your association.
+- `/deadlock player query:<optional> user:<optional>` shows a player's rank,
+  recorded win rate, recent form, activity, and five most-played heroes. Search
+  by Steam name to get selectable avatar/profile cards, use an ID or numeric
+  profile URL directly, select a linked Discord user, or omit both options to
+  use your own linked account.
 - `/deadlock scout match_id:<id-or-top-200> screenshot:<image>` is intended for the start of
   a match. Provide either the numeric ID or a full game screenshot; screenshot
   mode crops and reads only the bottom-right quadrant locally. It waits for the

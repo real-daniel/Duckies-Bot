@@ -7,7 +7,14 @@ from collections.abc import Callable
 import discord
 
 from ..accounts.steam import STEAM_ID64_OFFSET
-from .models import LiveMatchSnapshot, LivePlayer, MatchScout, ScoutedPlayer
+from .models import (
+    LiveMatchSnapshot,
+    LivePlayer,
+    MatchScout,
+    PlayerLookup,
+    ScoutedPlayer,
+    SteamProfile,
+)
 from ...presentation import field_name, finish_embed, make_embed
 
 
@@ -413,6 +420,116 @@ def build_scout_player_embed(
         context="Player scouting",
     )
     return embed
+
+
+def build_player_lookup_embed(player: PlayerLookup) -> discord.Embed:
+    """Render a standalone Deadlock player summary."""
+    profile = player.profile
+    name = discord.utils.escape_markdown(profile.personaname)
+    embed = make_embed(
+        name,
+        f"Deadlock player overview · Account `{profile.account_id}`",
+        tone="info",
+        url=profile.profile_url,
+    )
+    embed.add_field(
+        name=field_name("Rank"),
+        value=_player_lookup_rank(player),
+        inline=True,
+    )
+    win_rate = (
+        f"{player.win_rate:.0%}" if player.win_rate is not None else "No recorded games"
+    )
+    embed.add_field(
+        name=field_name("Recorded history"),
+        value=(
+            f"**{player.total_matches:,}** games · **{win_rate}** win rate\n"
+            f"{profile.matches_played_last_30_days:,} in the last 30 days"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Recent form"),
+        value=_recent_form(player.recent_outcomes),
+        inline=False,
+    )
+    top_heroes = []
+    for record in player.top_heroes:
+        experience = record.experience
+        hero_name = record.hero.name if record.hero else f"Hero {experience.hero_id}"
+        hero_rate = (
+            f"{experience.win_rate:.0%}" if experience.win_rate is not None else "—"
+        )
+        top_heroes.append(
+            f"**{hero_name}** · {experience.matches_played:,} games · {hero_rate} WR"
+        )
+    embed.add_field(
+        name=field_name("Top heroes"),
+        value="\n".join(top_heroes) or "No recorded hero history",
+        inline=False,
+    )
+    steam_id64 = STEAM_ID64_OFFSET + profile.account_id
+    embed.add_field(
+        name=field_name("Steam"),
+        value=(
+            f"[Open profile]({profile.profile_url})\n"
+            f"SteamID64 `{steam_id64}`"
+        ),
+        inline=False,
+    )
+    if profile.avatar_url:
+        embed.set_thumbnail(url=profile.avatar_url)
+    finish_embed(
+        embed,
+        "Player lookup",
+        source="Deadlock API + Steam Community",
+        context="Totals use recorded Deadlock API history",
+    )
+    return embed
+
+
+def build_player_search_embeds(
+    profiles: tuple[SteamProfile, ...],
+) -> tuple[discord.Embed, ...]:
+    """Render Steam name matches as visual identity cards."""
+    embeds: list[discord.Embed] = []
+    for index, profile in enumerate(profiles[:10], start=1):
+        name = discord.utils.escape_markdown(profile.personaname)
+        embed = make_embed(
+            f"{index}. {name}",
+            (
+                f"Account `{profile.account_id}` · "
+                f"{profile.matches_played_last_30_days:,} matches in the last 30 days\n"
+                f"[Open Steam profile]({profile.profile_url})"
+            ),
+            tone="muted",
+            url=profile.profile_url,
+        )
+        if profile.avatar_url:
+            embed.set_thumbnail(url=profile.avatar_url)
+        finish_embed(
+            embed,
+            "Player search",
+            source="Deadlock API + Steam Community",
+            context="Choose a numbered result below",
+        )
+        embeds.append(embed)
+    return tuple(embeds)
+
+
+def _player_lookup_rank(player: PlayerLookup) -> str:
+    if player.rank is None:
+        return "Unknown"
+    if player.rank.tier == 0:
+        return "Unranked"
+    name = player.rank_name or f"Tier {player.rank.tier}"
+    subranks = ("I", "II", "III", "IV", "V", "VI")
+    suffix = (
+        subranks[player.rank.subrank - 1]
+        if 1 <= player.rank.subrank <= len(subranks)
+        else str(player.rank.subrank)
+    )
+    return f"{name} {suffix}"
 
 
 def _live_player_line(
