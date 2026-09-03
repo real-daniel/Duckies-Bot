@@ -16,6 +16,7 @@ from ...features.deadlock.models import (
     PlayerHistory,
     PlayerRank,
     RankAsset,
+    SteamProfile,
 )
 from .errors import DeadlockAPIError, InvalidDeadlockResponseError
 
@@ -136,6 +137,39 @@ class DeadlockClient:
         if tier is None or subrank is None:
             raise InvalidDeadlockResponseError()
         return PlayerRank(tier=tier, subrank=subrank)
+
+    async def get_steam_profiles(
+        self,
+        account_ids: Sequence[int],
+    ) -> tuple[SteamProfile, ...]:
+        if not account_ids:
+            return ()
+        document = await self._get_json(
+            "/v1/players/steam",
+            params={"account_ids": ",".join(str(value) for value in account_ids)},
+        )
+        return _parse_steam_profiles(document)
+
+    async def search_steam_profiles(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+    ) -> tuple[SteamProfile, ...]:
+        query = query.strip()
+        if not query:
+            return ()
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        document = await self._get_json(
+            "/v1/players/steam-search",
+            params={
+                "search_query": query,
+                "limit": str(limit),
+                "min_matches_played_last_30d": "0",
+            },
+        )
+        return _parse_steam_profiles(document)
 
     async def get_player_history(
         self,
@@ -326,6 +360,36 @@ def _parse_active_match(raw: Mapping[str, Any]) -> ActiveMatch:
         open_spectator_slots=_optional_int(raw.get("open_spectator_slots")),
         players=tuple(players),
     )
+
+
+def _parse_steam_profiles(document: Any) -> tuple[SteamProfile, ...]:
+    if not isinstance(document, list):
+        raise InvalidDeadlockResponseError()
+    profiles: list[SteamProfile] = []
+    for raw in document:
+        if not isinstance(raw, Mapping):
+            continue
+        account_id = _optional_int(raw.get("account_id"))
+        personaname = _optional_str(raw.get("personaname"))
+        profile_url = _optional_str(raw.get("profileurl"))
+        matches = _optional_int(raw.get("matches_played_last_30d"))
+        if None in (account_id, personaname, profile_url, matches):
+            continue
+        profiles.append(
+            SteamProfile(
+                account_id=account_id,
+                personaname=personaname,
+                profile_url=profile_url,
+                avatar_url=(
+                    _optional_str(raw.get("avatarfull"))
+                    or _optional_str(raw.get("avatarmedium"))
+                    or _optional_str(raw.get("avatar"))
+                ),
+                country_code=_optional_str(raw.get("countrycode")),
+                matches_played_last_30_days=matches,
+            )
+        )
+    return tuple(profiles)
 
 
 def _optional_int(value: Any) -> int | None:

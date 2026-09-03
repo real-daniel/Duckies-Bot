@@ -17,9 +17,11 @@ from .models import (
     LiveMatchSnapshot,
     MatchScout,
     PlayerHistory,
+    PlayerLookup,
     PlayerRank,
     RankAsset,
     ScoutedPlayer,
+    SteamProfile,
 )
 from ...providers.deadlock import (
     DeadlockAPIError,
@@ -70,6 +72,77 @@ class DeadlockService:
         """Find a linked account's match without fetching unused hero assets."""
         match = await self.client.get_active_match(account_id)
         return match.match_id if match is not None else None
+
+    async def search_players(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+    ) -> tuple[SteamProfile, ...]:
+        """Find Steam profiles indexed by the Deadlock API."""
+        return await self.client.search_steam_profiles(query, limit=limit)
+
+    async def player_lookup(
+        self,
+        account_id: int,
+        *,
+        profile: SteamProfile | None = None,
+    ) -> PlayerLookup:
+        """Build an API-backed summary for one Deadlock player."""
+        if profile is not None and profile.account_id != account_id:
+            raise ValueError("profile does not belong to the requested account")
+        if profile is None:
+            profiles = await self.client.get_steam_profiles((account_id,))
+            profile = next(
+                (item for item in profiles if item.account_id == account_id),
+                None,
+            )
+            if profile is None:
+                raise DeadlockAPIError(
+                    "No Deadlock player data was found for that Steam account."
+                )
+
+        cached_profile, experiences, rank_assets = await asyncio.gather(
+            self._get_profile(account_id, asyncio.Semaphore(1)),
+            self._try_get_all_experience(account_id),
+            self._get_rank_assets(),
+        )
+        ordered_experiences = tuple(
+            sorted(
+                (item for item in experiences if item.matches_played > 0),
+                key=lambda item: (-item.matches_played, -item.wins, item.hero_id),
+            )
+        )
+        top_experiences = ordered_experiences[:5]
+        heroes = await self._get_heroes(
+            tuple(item.hero_id for item in top_experiences)
+        )
+        rank_name = None
+        if cached_profile.rank is not None:
+            rank_name = next(
+                (
+                    asset.name
+                    for asset in rank_assets
+                    if asset.tier == cached_profile.rank.tier
+                ),
+                None,
+            )
+            if cached_profile.rank.tier == 0:
+                rank_name = "Unranked"
+        return PlayerLookup(
+            profile=profile,
+            rank=cached_profile.rank,
+            rank_name=rank_name,
+            recent_outcomes=(
+                cached_profile.history.outcomes if cached_profile.history else ()
+            ),
+            total_matches=sum(item.matches_played for item in ordered_experiences),
+            total_wins=sum(item.wins for item in ordered_experiences),
+            top_heroes=tuple(
+                HeroRecord(item, heroes.get(item.hero_id))
+                for item in top_experiences
+            ),
+        )
 
     async def random_top_200_match_id(self) -> int:
         now = time.monotonic()
@@ -541,6 +614,15 @@ class DeadlockService:
             return await self.client.get_player_history(account_id)
         except DeadlockAPIError:
             return None
+
+    async def _try_get_all_experience(
+        self,
+        account_id: int,
+    ) -> tuple[HeroExperience, ...]:
+        try:
+            return await self.client.get_hero_experience((account_id,))
+        except DeadlockAPIError:
+            return ()
 
 
 @dataclass(frozen=True, slots=True)

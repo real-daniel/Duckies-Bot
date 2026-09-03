@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, patch
 from duckies_bot.features.deadlock import DeadlockService
 from duckies_bot.features.deadlock.formatter import (
     build_live_match_embed,
+    build_player_lookup_embed,
+    build_player_search_embeds,
     build_scout_overview_embeds,
     build_scout_player_embed,
     build_watch_tab_embed,
@@ -26,15 +28,21 @@ from duckies_bot.features.deadlock.models import (
     LivePlayer,
     MatchScout,
     PlayerHistory,
+    PlayerLookup,
     PlayerRank,
     RankAsset,
     ScoutedPlayer,
     StatueBuff,
+    SteamProfile,
 )
 from duckies_bot.providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
 from duckies_bot.providers.deadlock.client import DeadlockClient
 from duckies_bot.providers.deadlock.live_client import DeadlockLiveClient
-from duckies_bot.views import DeadlockScoutView, DeadlockWatchView
+from duckies_bot.views import (
+    DeadlockPlayerSearchView,
+    DeadlockScoutView,
+    DeadlockWatchView,
+)
 from duckies_bot.cogs.deadlock import (
     DeadlockCog,
     _bot_authenticated_message,
@@ -265,6 +273,36 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             session.requests[2][1],
             [("account_ids", "123"), ("account_ids", "456"), ("hero_ids", "69")],
+        )
+
+    async def test_fetches_and_searches_steam_profiles(self) -> None:
+        document = [
+            {
+                "account_id": 123,
+                "personaname": "Ducky",
+                "profileurl": "https://steamcommunity.com/profiles/76561197960265851",
+                "avatarfull": "https://example.test/avatar.jpg",
+                "countrycode": "CA",
+                "matches_played_last_30d": 14,
+            }
+        ]
+        session = FakeSession([FakeResponse(document), FakeResponse(document)])
+        client = DeadlockClient(base_url="https://example.test", session=session)  # type: ignore[arg-type]
+
+        profiles = await client.get_steam_profiles((123,))
+        matches = await client.search_steam_profiles("Ducky", limit=5)
+
+        self.assertEqual(profiles[0].personaname, "Ducky")
+        self.assertEqual(profiles[0].matches_played_last_30_days, 14)
+        self.assertEqual(matches, profiles)
+        self.assertEqual(session.requests[0][1], {"account_ids": "123"})
+        self.assertEqual(
+            session.requests[1][1],
+            {
+                "search_query": "Ducky",
+                "limit": "5",
+                "min_matches_played_last_30d": "0",
+            },
         )
 
 
@@ -571,6 +609,7 @@ class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
 
     def test_chat_commands_are_registered(self) -> None:
         command_names = {command.name for command in DeadlockCog.deadlock.commands}
+        self.assertIn("player", command_names)
         self.assertIn("chat", command_names)
         self.assertIn("chat-stop", command_names)
         self.assertIn("watch", command_names)
@@ -746,6 +785,70 @@ class DeadlockFormatterTests(unittest.TestCase):
         self.assertIn("**Infernus** — 50 games · 60% WR · 25% played", top_heroes)
         self.assertTrue(any("steamcommunity.com/profiles/" in field.value for field in detail.fields))
 
+    def test_player_lookup_embed_shows_identity_and_recorded_stats(self) -> None:
+        profile = SteamProfile(
+            account_id=1001,
+            personaname="Ducky",
+            profile_url="https://steamcommunity.com/profiles/76561197960266729",
+            avatar_url="https://example.test/avatar.jpg",
+            country_code="CA",
+            matches_played_last_30_days=14,
+        )
+        player = PlayerLookup(
+            profile=profile,
+            rank=PlayerRank(8, 5),
+            rank_name="Oracle",
+            recent_outcomes=("W", "L", "W"),
+            total_matches=50,
+            total_wins=26,
+            top_heroes=(
+                HeroRecord(
+                    HeroExperience(1001, 1, 30, 18, 999),
+                    HeroSummary(1, "Infernus", None),
+                ),
+            ),
+        )
+
+        embed = build_player_lookup_embed(player)
+
+        self.assertEqual(embed.title, "Ducky")
+        self.assertEqual(embed.url, profile.profile_url)
+        self.assertTrue(any(field.name == "Rank" and field.value == "Oracle V" for field in embed.fields))
+        history = next(field.value for field in embed.fields if field.name == "Recorded history")
+        self.assertIn("50", history)
+        self.assertIn("52%", history)
+        self.assertIn("14 in the last 30 days", history)
+        heroes = next(field.value for field in embed.fields if field.name == "Top heroes")
+        self.assertIn("Infernus", heroes)
+        self.assertIn("60% WR", heroes)
+
+    def test_player_search_results_show_numbered_profiles_and_avatars(self) -> None:
+        profiles = (
+            SteamProfile(
+                1001,
+                "Ducky",
+                "https://steamcommunity.com/profiles/76561197960266729",
+                "https://example.test/ducky.jpg",
+                "CA",
+                14,
+            ),
+            SteamProfile(
+                1002,
+                "Ducky",
+                "https://steamcommunity.com/profiles/76561197960266730",
+                "https://example.test/other.jpg",
+                None,
+                3,
+            ),
+        )
+
+        embeds = build_player_search_embeds(profiles)
+
+        self.assertEqual([embed.title for embed in embeds], ["1. Ducky", "2. Ducky"])
+        self.assertEqual(embeds[0].thumbnail.url, "https://example.test/ducky.jpg")
+        self.assertIn("Account `1002`", embeds[1].description)
+        self.assertIn("3 matches in the last 30 days", embeds[1].description)
+
     def test_full_scout_overview_is_two_six_card_team_grids(self) -> None:
         players = tuple(
             ScoutedPlayer(
@@ -916,6 +1019,42 @@ class FakeScoutLiveClient:
 
 
 class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_player_name_lookup_does_not_silently_choose_ambiguously(self) -> None:
+        profiles = (
+            SteamProfile(1001, "Ducky", "https://example.test/1", None, None, 10),
+            SteamProfile(1002, "Ducky", "https://example.test/2", None, None, 8),
+        )
+        cog = object.__new__(DeadlockCog)
+        cog.service = SimpleNamespace(search_players=AsyncMock(return_value=profiles))
+        cog.links = SimpleNamespace(get=AsyncMock(return_value=None))
+        requester = SimpleNamespace(id=1, display_name="Requester")
+
+        with self.assertRaisesRegex(ValueError, "Choose a matching Steam profile"):
+            await cog._resolve_player_input(requester, "Ducky", None)
+
+    async def test_builds_standalone_player_lookup(self) -> None:
+        api = FakeScoutAPI()
+        service = DeadlockService(api)  # type: ignore[arg-type]
+        profile = SteamProfile(
+            1001,
+            "Ducky",
+            "https://steamcommunity.com/profiles/76561197960266729",
+            None,
+            None,
+            14,
+        )
+
+        result = await service.player_lookup(1001, profile=profile)
+
+        self.assertEqual(result.profile, profile)
+        self.assertEqual(result.rank_name, "Oracle")
+        self.assertEqual(result.total_matches, 50)
+        self.assertEqual(result.total_wins, 26)
+        self.assertEqual(
+            [item.hero.name if item.hero else None for item in result.top_heroes],
+            [None, "Infernus"],
+        )
+
     async def test_live_stream_refreshes_unavailable_broadcast_url(self) -> None:
         snapshot = LiveMatchSnapshot(123, 0, ())
 
@@ -1584,3 +1723,42 @@ class DeadlockScoutViewTests(unittest.IsolatedAsyncioTestCase):
 
         await view.on_timeout()
         self.assertTrue(all(button.disabled for button in view.children))
+
+
+class DeadlockPlayerSearchViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_selecting_visual_result_opens_player_lookup(self) -> None:
+        profile = SteamProfile(
+            1001,
+            "Ducky",
+            "https://steamcommunity.com/profiles/76561197960266729",
+            "https://example.test/ducky.jpg",
+            "CA",
+            14,
+        )
+        result = PlayerLookup(
+            profile,
+            PlayerRank(8, 5),
+            "Oracle",
+            ("W", "L"),
+            50,
+            26,
+            (),
+        )
+        service = SimpleNamespace(player_lookup=AsyncMock(return_value=result))
+        view = DeadlockPlayerSearchView((profile,), 42, service)
+        select = view.children[0]
+        select._values = ["0"]  # type: ignore[attr-defined]
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+            edit_original_response=AsyncMock(),
+        )
+
+        await select.callback(interaction)  # type: ignore[attr-defined]
+
+        service.player_lookup.assert_awaited_once_with(1001, profile=profile)
+        interaction.response.defer.assert_awaited_once()
+        interaction.edit_original_response.assert_awaited_once()
+        embed = interaction.edit_original_response.await_args.kwargs["embed"]
+        self.assertEqual(embed.title, "Ducky")
+        self.assertIsNone(interaction.edit_original_response.await_args.kwargs["view"])

@@ -13,6 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from ..features.accounts import SteamIDError, parse_steam_id
 from ..features.deadlock import (
     DeadlockScreenshotReader,
     DeadlockService,
@@ -21,16 +22,28 @@ from ..features.deadlock import (
 )
 from ..features.deadlock.formatter import (
     build_live_match_embed,
+    build_player_lookup_embed,
+    build_player_search_embeds,
     build_scout_overview_embeds,
 )
-from ..features.deadlock.models import LiveChatMessage, LiveMatchSnapshot, MatchScout
+from ..features.deadlock.models import (
+    LiveChatMessage,
+    LiveMatchSnapshot,
+    MatchScout,
+    SteamProfile,
+)
 from ..features.deadlock.scoreboard import (
     render_discord_scoreboard_page,
     render_live_scoreboard,
 )
 from ..providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
 from ..storage import CompanionPairing, CompanionPairingRepository, SteamLinkRepository
-from ..views import DeadlockScoutView, DeadlockWatchView, WATCH_SCOREBOARD_FILENAME
+from ..views import (
+    DeadlockPlayerSearchView,
+    DeadlockScoutView,
+    DeadlockWatchView,
+    WATCH_SCOREBOARD_FILENAME,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -64,6 +77,12 @@ class _LiveWatch:
     requester_id: int
     task: asyncio.Task[None]
     view: DeadlockWatchView
+
+
+class _PlayerSearchResults(ValueError):
+    def __init__(self, profiles: tuple[SteamProfile, ...]) -> None:
+        super().__init__("Choose a matching Steam profile.")
+        self.profiles = profiles
 
 
 _WATCH_REFRESH_SECONDS = 60.0
@@ -103,6 +122,81 @@ class DeadlockCog(commands.Cog):
         for watch in self._live_watches.values():
             watch.task.cancel()
         self._live_watches.clear()
+
+    @deadlock.command(name="player", description="Look up a Deadlock player")
+    @app_commands.describe(
+        query="Steam name, ID, or numeric profile URL; defaults to your linked account",
+        user="Linked Discord user to look up",
+    )
+    async def player(
+        self,
+        interaction: discord.Interaction,
+        query: str | None = None,
+        user: discord.User | None = None,
+    ) -> None:
+        if query is not None and user is not None:
+            await interaction.response.send_message(
+                "Provide either a Steam player or a linked Discord user, not both.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(thinking=True)
+        try:
+            account_id, profile = await self._resolve_player_input(
+                interaction.user,
+                query,
+                user,
+            )
+            result = await self.service.player_lookup(account_id, profile=profile)
+        except _PlayerSearchResults as exc:
+            view = DeadlockPlayerSearchView(
+                exc.profiles,
+                requester_id=interaction.user.id,
+                service=self.service,
+            )
+            message = await interaction.followup.send(
+                content="Steam names are not unique. Match the avatar, then choose a result:",
+                embeds=list(build_player_search_embeds(exc.profiles)),
+                view=view,
+                wait=True,
+            )
+            view.message = message
+            return
+        except ValueError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        except DeadlockAPIError as exc:
+            await interaction.followup.send(exc.user_message, ephemeral=True)
+            return
+        except Exception:
+            LOGGER.exception("Unexpected error during Deadlock player lookup")
+            await interaction.followup.send(
+                "Something unexpected went wrong while looking up that player.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(embed=build_player_lookup_embed(result))
+
+    @player.autocomplete("query")
+    async def player_autocomplete(
+        self,
+        _interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        current = current.strip()
+        if len(current) < 2:
+            return []
+        try:
+            profiles = await self.service.search_players(current, limit=25)
+        except (DeadlockAPIError, ValueError):
+            return []
+        return [
+            app_commands.Choice(
+                name=f"{profile.personaname} · {profile.account_id}"[:100],
+                value=str(profile.account_id),
+            )
+            for profile in profiles[:25]
+        ]
 
     @deadlock.command(name="scout", description="Scout a new match by ID or screenshot")
     @app_commands.describe(
@@ -690,6 +784,34 @@ class DeadlockCog(commands.Cog):
         if match_id <= 0:
             raise ValueError("Enter a positive numeric match ID or `top-200`.")
         return match_id
+
+    async def _resolve_player_input(
+        self,
+        requester: discord.User | discord.Member,
+        query: str | None,
+        user: discord.User | None,
+    ) -> tuple[int, SteamProfile | None]:
+        if query is None:
+            target = user or requester
+            account = await self.links.get(target.id)
+            if account is None:
+                if target.id == requester.id:
+                    raise ValueError(
+                        "Link your Steam account with `/steam link`, or enter a Steam name or ID."
+                    )
+                raise ValueError(f"{target.display_name} has not linked a Steam account.")
+            return account.account_id, None
+
+        normalized = query.strip()
+        if not normalized:
+            raise ValueError("Enter a Steam name, ID, or numeric profile URL.")
+        try:
+            return parse_steam_id(normalized).account_id, None
+        except SteamIDError:
+            profiles = await self.service.search_players(normalized, limit=10)
+            if not profiles:
+                raise ValueError(f'No active Deadlock player matched "{normalized[:80]}".')
+            raise _PlayerSearchResults(profiles)
 
     async def _resolve_match_input(
         self,
