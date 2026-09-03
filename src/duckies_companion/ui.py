@@ -52,6 +52,9 @@ class CompanionWindow:
 
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+        # Monitoring belongs to the companion window, not to the way Deadlock
+        # is launched. This also supports mod managers and desktop shortcuts as
+        # long as they start the game with -condebug enabled.
         self.root.after(0, self._start_monitoring)
 
     def _set_window_icon(self) -> None:
@@ -144,14 +147,20 @@ class CompanionWindow:
             if settings.endpoint and not settings.endpoint.casefold().startswith("https://"):
                 raise ValueError("The companion endpoint must use HTTPS.")
             save_settings(settings)
+            # Establish the tail position before asking Steam to launch. When
+            # monitoring is already active this simply refreshes delivery
+            # settings (or switches to a newly selected Steam library).
             self._start_monitoring(settings=settings, steamapps=steamapps)
             launch_deadlock(additional_args=arguments)
         except (OSError, SteamNotFoundError, RuntimeError, ValueError) as exc:
             messagebox.showerror("Could not launch Deadlock", str(exc), parent=self.root)
-            self.status.set("Launch failed")
+            if self._monitor_thread is not None and self._monitor_thread.is_alive():
+                self.status.set("Launch failed — still monitoring for matches")
+            else:
+                self.status.set("Launch failed")
             return
 
-        self.status.set("Deadlock launch requested — waiting for deadlock.exe")
+        self.status.set("Deadlock launched — waiting for a match")
 
     def _start_monitoring(
         self,
@@ -164,7 +173,7 @@ class CompanionWindow:
         try:
             steamapps = steamapps or validate_steamapps_path(settings.steamapps_path)
         except ValueError as exc:
-            self.status.set("Select your Steamapps folder to enable detection")
+            self.status.set("Select your Steamapps folder to start monitoring")
             if show_error:
                 messagebox.showerror("Could not monitor Deadlock", str(exc), parent=self.root)
             return False
@@ -182,6 +191,8 @@ class CompanionWindow:
             self._monitor_stop.set()
 
         tailer = MatchLogTailer(log_path)
+        # Ignore matches already present when the companion opens, but consume
+        # a log created later from byte zero.
         tailer.read_available()
         monitor_stop = threading.Event()
         self._monitor_stop = monitor_stop
@@ -193,7 +204,7 @@ class CompanionWindow:
             daemon=True,
         )
         self._monitor_thread.start()
-        self.status.set("Waiting for Deadlock (deadlock.exe)")
+        self.status.set("Waiting for Deadlock to start")
         return True
 
     def _monitor(
@@ -205,24 +216,22 @@ class CompanionWindow:
         while not self._stop.is_set():
             running = is_deadlock_running()
             if running != was_running:
-                status = (
-                    "Deadlock detected — monitoring console.log"
-                    if running
-                    else "Deadlock is closed — waiting for deadlock.exe"
-                )
-                self._set_status(status)
+                if running:
+                    self._set_status("Deadlock detected — waiting for a match")
+                else:
+                    self._set_status("Deadlock is not running — monitoring paused")
                 was_running = running
 
             if running:
                 for match_id in tailer.read_available():
                     self._set_status(f"Match {match_id} detected — reporting")
-                    endpoint, token = self._current_delivery_settings()
+                    settings = self._current_delivery_settings()
                     try:
-                        report_match_with_retries(match_id, endpoint, token)
+                        report_match_with_retries(match_id, *settings)
                     except (RuntimeError, ValueError) as exc:
                         self._set_status(f"Match {match_id} could not be reported: {exc}")
                     else:
-                        destination = "sent to Discord" if endpoint else "detected locally"
+                        destination = "sent to Discord" if settings[0] else "detected locally"
                         self._set_status(f"Match {match_id} {destination}")
 
             if monitor_stop.wait(max(tailer.poll_seconds, 1.0)):
@@ -232,11 +241,16 @@ class CompanionWindow:
         return self._report_endpoint, self._report_token
 
     def _sync_delivery_settings(self, *_args: object) -> None:
+        """Keep a thread-safe snapshot of the UI's delivery fields."""
+
         self._report_endpoint = self.endpoint.get().strip().rstrip("/") or None
         self._report_token = self.token.get().strip() or None
 
     def _set_status(self, value: str) -> None:
-        self.root.after(0, self.status.set, value)
+        try:
+            self.root.after(0, self.status.set, value)
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _close(self) -> None:
         self._stop.set()

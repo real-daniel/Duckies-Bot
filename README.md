@@ -68,7 +68,7 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   floors.
 - `/tarkov barter-profit top:<1-20>` ranks PvE trader barters by gross savings.
 - `/tarkov flips top:<1-20> include_task_locked:<true|false> pmc_level:<1-100>
-  high_liquidity_only:<true|false>` ranks items bought from traders and resold
+high_liquidity_only:<true|false>` ranks items bought from traders and resold
   on the PvE flea market. It can exclude task unlocks, estimate accessible
   loyalty levels from PMC level, and hide low-liquidity items.
 
@@ -108,7 +108,7 @@ Linux. Use `--game-folder` or `--log-path` only when automatic discovery cannot
 find the install. By default, each detected match is printed as one JSON line:
 
 ```json
-{"match_id": 100141930, "detected_at": "...", "source": "deadlock-console"}
+{ "match_id": 100141930, "detected_at": "...", "source": "deadlock-console" }
 ```
 
 The bot includes the authenticated receiver. In Discord, run
@@ -146,11 +146,12 @@ The selected Steamapps path should directly contain `common/Deadlock`. The Play
 button starts Steam with `-applaunch 1422450 -condebug` and appends the parsed
 additional options. Arguments are passed directly to Steam without a command
 shell. Settings are saved in the current user's local application-data folder,
-so the pairing token should still be treated like a password. While the window
-is open, the companion waits for `deadlock.exe`, monitors `console.log` only
-while that process is running, and pauses again when the game closes. This also
-works when the game is started through a mod launcher or shortcut, provided it
-uses `-condebug`.
+so the pairing token should still be treated like a password. The companion
+checks for Deadlock while its window is open, starts reading the log whenever
+the game process appears, and pauses when the game exits. This works whether
+Deadlock is started with the Play button, a mod launcher, or another shortcut;
+those other launch methods must include `-condebug`. Pressing Play again does
+not create a second monitor.
 
 To build a standalone Windows executable that does not require Python on the
 target PC:

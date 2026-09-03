@@ -8,35 +8,32 @@ import subprocess
 import sys
 
 
-DEADLOCK_PROCESS_NAME = "deadlock.exe"
+_WINDOWS_PROCESS_NAMES = frozenset({"project8.exe", "deadlock.exe"})
+_POSIX_PROCESS_NAMES = frozenset({"project8", "project8.exe", "deadlock", "deadlock.exe"})
 
 
 def is_deadlock_running() -> bool:
-    """Return whether Deadlock's game process is currently visible."""
+    """Return whether a Deadlock client process is currently visible."""
 
     try:
         if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             result = subprocess.run(
-                [
-                    "tasklist",
-                    "/FI",
-                    f"IMAGENAME eq {DEADLOCK_PROCESS_NAME}",
-                    "/NH",
-                    "/FO",
-                    "CSV",
-                ],
+                ["tasklist", "/NH", "/FO", "CSV"],
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=5,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                creationflags=creationflags,
             )
             if result.returncode != 0:
                 return False
-            return any(
-                row and row[0].casefold() == DEADLOCK_PROCESS_NAME
+            names = (
+                row[0].casefold()
                 for row in csv.reader(io.StringIO(result.stdout))
+                if row
             )
+            return any(name in _WINDOWS_PROCESS_NAMES for name in names)
 
         result = subprocess.run(
             ["ps", "-A", "-o", "comm="],
@@ -48,8 +45,7 @@ def is_deadlock_running() -> bool:
         if result.returncode != 0:
             return False
         return any(
-            line.strip().rsplit("/", 1)[-1].casefold()
-            in {"deadlock", DEADLOCK_PROCESS_NAME}
+            line.strip().rsplit("/", 1)[-1].casefold() in _POSIX_PROCESS_NAMES
             for line in result.stdout.splitlines()
         )
     except (OSError, subprocess.SubprocessError):

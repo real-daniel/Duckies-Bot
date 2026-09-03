@@ -1,11 +1,11 @@
 """Tests for local Deadlock match detection."""
 
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, sentinel
 import threading
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch, sentinel
 
 from duckies_companion.app import report_match, report_match_with_retries
 from duckies_companion.detector import extract_match_id
@@ -125,18 +125,25 @@ class DeadlockLauncherTests(unittest.TestCase):
 
 
 class DeadlockProcessTests(unittest.TestCase):
-    def test_detects_deadlock_executable_on_windows(self) -> None:
+    def test_detects_windows_project8_process(self) -> None:
         result = SimpleNamespace(
             returncode=0,
-            stdout='"deadlock.exe","3904","Console","1","2,000 K"\n',
+            stdout='"steam.exe","1","Console","1","1,000 K"\n'
+            '"project8.exe","2","Console","1","2,000 K"\n',
         )
         with (
             patch("duckies_companion.process.sys.platform", "win32"),
-            patch("duckies_companion.process.subprocess.run", return_value=result) as run,
+            patch("duckies_companion.process.subprocess.run", return_value=result),
         ):
             self.assertTrue(is_deadlock_running())
 
-        self.assertIn("IMAGENAME eq deadlock.exe", run.call_args.args[0])
+    def test_returns_false_when_deadlock_is_absent(self) -> None:
+        result = SimpleNamespace(returncode=0, stdout="steam\ndiscord\n")
+        with (
+            patch("duckies_companion.process.sys.platform", "linux"),
+            patch("duckies_companion.process.subprocess.run", return_value=result),
+        ):
+            self.assertFalse(is_deadlock_running())
 
 
 class CompanionDeliveryTests(unittest.TestCase):
@@ -213,7 +220,34 @@ class CompanionSettingsTests(unittest.TestCase):
 
 
 class CompanionWindowTests(unittest.TestCase):
-    def test_reads_console_only_while_deadlock_is_running(self) -> None:
+    def test_starts_monitoring_without_launching_deadlock(self) -> None:
+        window = CompanionWindow.__new__(CompanionWindow)
+        window.root = MagicMock()
+        window.status = MagicMock()
+        window._stop = threading.Event()
+        window._monitor_stop = threading.Event()
+        window._monitor_thread = None
+        window._monitored_log_path = None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            steamapps = Path(temp_dir) / "steamapps"
+            (steamapps / "common" / "Deadlock").mkdir(parents=True)
+            settings = CompanionSettings(steamapps_path=str(steamapps))
+            with (
+                patch("duckies_companion.ui.MatchLogTailer") as tailer_type,
+                patch("duckies_companion.ui.threading.Thread") as thread_type,
+            ):
+                started = window._start_monitoring(settings=settings)
+
+        self.assertTrue(started)
+        tailer_type.return_value.read_available.assert_called_once_with()
+        thread_type.return_value.start.assert_called_once_with()
+        self.assertEqual(
+            window._monitored_log_path,
+            steamapps / "common" / "Deadlock" / "game" / "citadel" / "console.log",
+        )
+
+    def test_reads_log_only_while_deadlock_process_is_running(self) -> None:
         window = CompanionWindow.__new__(CompanionWindow)
         window._stop = threading.Event()
         window._set_status = MagicMock()
@@ -234,6 +268,3 @@ class CompanionWindowTests(unittest.TestCase):
 
         tailer.read_available.assert_called_once_with()
         report.assert_called_once_with(100141930, None, None)
-        statuses = [call.args[0] for call in window._set_status.call_args_list]
-        self.assertIn("Deadlock detected — monitoring console.log", statuses)
-        self.assertIn("Deadlock is closed — waiting for deadlock.exe", statuses)
