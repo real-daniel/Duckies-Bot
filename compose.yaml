@@ -28,8 +28,8 @@ services:
     init: true
     environment:
       DEADLOCK_API_KEY: ${DEADLOCK_API_KEY:-}
-    expose:
-      - "3000"
+    ports:
+      - "127.0.0.1:3000:3000"
     logging:
       driver: json-file
       options:

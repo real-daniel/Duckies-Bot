@@ -187,8 +187,8 @@ screenshots are processed locally and are not sent to a separate OCR service.
 ## Docker deployment
 
 The included Compose stack runs the Python bot and the Deadlock live-events
-parser on one host. The parser is reachable only from the private Compose
-network; port 3000 is not published to the internet.
+parser on one host. The parser is available to the bot on the private Compose
+network and on host loopback; port 3000 is not published to the internet.
 
 1. Copy `.env.example` to `.env` and set `DISCORD_TOKEN`.
 2. Optionally set `DISCORD_GUILD_ID` and `DEADLOCK_API_KEY`.

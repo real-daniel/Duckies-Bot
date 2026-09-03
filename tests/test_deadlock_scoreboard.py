@@ -2,6 +2,7 @@
 
 from io import BytesIO
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -73,6 +74,23 @@ class DeadlockScoreboardTests(unittest.TestCase):
         for output in outputs.values():
             with Image.open(BytesIO(output)) as image:
                 self.assertEqual(image.size, (1200, 760))
+
+    def test_statue_badge_is_only_drawn_on_combat_page(self) -> None:
+        snapshot = _snapshot()
+
+        for page in ("overview", "economy", "builds", "statues", "player", "timeline"):
+            with self.subTest(page=page), patch(
+                "duckies_bot.features.deadlock.scoreboard._draw_statue_badge"
+            ) as draw_badge:
+                render_discord_scoreboard_page(snapshot, page, selected_account_id=1001)
+                draw_badge.assert_not_called()
+
+        with patch(
+            "duckies_bot.features.deadlock.scoreboard._draw_statue_badge"
+        ) as draw_badge:
+            render_discord_scoreboard_page(snapshot, "combat")
+            self.assertEqual(draw_badge.call_count, 12)
+            self.assertTrue(all(call.args[1] in (260, 850) for call in draw_badge.call_args_list))
 
     def test_renders_resolved_item_icon_bytes(self) -> None:
         snapshot = _snapshot()

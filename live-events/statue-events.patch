@@ -1,5 +1,5 @@
 diff --git a/live-events/src/demo_parser/types.rs b/live-events/src/demo_parser/types.rs
-index 2c68a64..7359b66 100644
+index 2c68a64..99cfa16 100644
 --- a/live-events/src/demo_parser/types.rs
 +++ b/live-events/src/demo_parser/types.rs
 @@ -48,6 +48,14 @@ pub(super) enum DemoEventPayload {
@@ -26,7 +26,7 @@ index 2c68a64..7359b66 100644
          }
      }
 diff --git a/live-events/src/demo_parser/visitor.rs b/live-events/src/demo_parser/visitor.rs
-index d639439..0c0d3be 100644
+index d639439..0c9dd84 100644
 --- a/live-events/src/demo_parser/visitor.rs
 +++ b/live-events/src/demo_parser/visitor.rs
 @@ -3,7 +3,7 @@ use std::collections::HashSet;
@@ -42,16 +42,15 @@ index d639439..0c0d3be 100644
      sender: UnboundedSender<Event>,
      subscribed_chat_messages: bool,
      subscribed_entities: Option<HashSet<EntityType>>,
-+    seen_modifier_entries: HashSet<i32>,
++    seen_statue_modifiers: HashSet<(i32, Option<u32>, u32)>,
      game_time: f32,
      tick_interval: f32,
      rules: GameRulesProxyEvent,
-@@ -41,7 +42,8 @@ impl SendingVisitor {
-         Self {
+@@ -41,6 +42,7 @@ impl SendingVisitor {
              sender,
              subscribed_chat_messages,
              subscribed_entities: subscribed_entities.map(|iter| iter.into_iter().collect()),
-+            seen_modifier_entries: HashSet::new(),
++            seen_statue_modifiers: HashSet::new(),
              game_time: 0.0,
              tick_interval: 1.0 / 60.0,
              rules: GameRulesProxyEvent::default(),
@@ -64,7 +63,7 @@ index d639439..0c0d3be 100644
          let demo_event = DemoEvent {
              tick: ctx.tick(),
              game_time: self.game_time,
-@@ -220,4 +224,89 @@ impl SendingVisitor {
+@@ -220,4 +224,90 @@ impl SendingVisitor {
          self.sender.send(demo_event.try_into()?)?;
          Ok(())
      }
@@ -78,16 +77,12 @@ index d639439..0c0d3be 100644
 +        };
 +
 +        for (entry_id, item) in table.items() {
-+            if self.seen_modifier_entries.contains(entry_id) {
-+                continue;
-+            }
 +            let Some(data) = item.get_user_data() else {
 +                continue;
 +            };
 +            let Ok(modifier) = ModifierTableEntry::decode(data.as_slice()) else {
 +                continue;
 +            };
-+            self.seen_modifier_entries.insert(*entry_id);
 +            if modifier.entry_type.unwrap_or(1) != 1 {
 +                continue;
 +            }
@@ -100,13 +95,18 @@ index d639439..0c0d3be 100644
 +            let Some((stat, tier)) = statue_buff(modifier_subclass) else {
 +                continue;
 +            };
++            let parent_index = ehandle_to_index(parent);
++            let identity = (parent_index, modifier.serial_number, modifier_subclass);
++            if !self.seen_statue_modifiers.insert(identity) {
++                continue;
++            }
 +
 +            let event = DemoEvent {
 +                tick: ctx.tick(),
 +                game_time: self.game_time,
 +                event: DemoEventPayload::StatueBuff {
 +                    entry_id: *entry_id,
-+                    parent: ehandle_to_index(parent),
++                    parent: parent_index,
 +                    serial_number: modifier.serial_number,
 +                    modifier_subclass,
 +                    stat,
