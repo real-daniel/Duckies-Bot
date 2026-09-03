@@ -335,10 +335,13 @@ def _draw_discord_page_team(
         if page == "statues":
             _draw_statue_details(draw, player, left + 306, y + 8)
         else:
-            draw.text((right - 12, y + 9), primary, font=_font(23, bold=True), fill=_TEXT, anchor="ra")
+            primary_font = _font(20 if page == "combat" else 23, bold=True)
+            secondary_font = _font(17 if page == "combat" else 19)
+            draw.text((right - 12, y + 9), primary, font=primary_font, fill=_TEXT, anchor="ra")
             if page != "builds":
-                draw.text((right - 12, y + 48), secondary, font=_font(19), fill=_MUTED, anchor="ra")
-            _draw_statue_badge(draw, left + 306, y + 57, player.statue_buff_count, size=15)
+                draw.text((right - 12, y + 48), secondary, font=secondary_font, fill=_MUTED, anchor="ra")
+            if page == "combat":
+                _draw_statue_badge(draw, left + 235, y + 67, player.statue_buff_count, size=15)
 
         if page == "builds":
             inventory = _ordered_inventory(snapshot, player)
@@ -396,7 +399,6 @@ def _draw_discord_player_page(
     player_name = _fit_text(draw, player.steam_name, _font(45, bold=True), 850)
     draw.text((255, 145), player_name, font=_font(45, bold=True), fill=_TEXT)
     draw.text((255, 207), hero_name, font=_font(31), fill=color)
-    _draw_statue_badge(draw, 990, 207, player.statue_buff_count, size=24)
     stats = (
         (255, 295, "SOULS", _compact(player.net_worth)),
         (485, 295, "K / D / A", f"{player.kills} / {player.deaths} / {player.assists}"),
@@ -494,7 +496,6 @@ def _draw_discord_team(
             f"{_compact(player.hero_healing)} HEAL"
         )
         draw.text((430, y + 13), stat_line, font=_font(17, bold=True), fill=_TEXT)
-        _draw_statue_badge(draw, 910, y + 10, player.statue_buff_count, size=18)
         inventory = _ordered_inventory(snapshot, player)
         mapped_inventory = bool(snapshot.items)
         for slot in range(12):
@@ -678,8 +679,6 @@ def _draw_player_row(
     for x, value, anchor in values:
         draw.text((x, y + 22), value, font=_font(18, bold=True), fill=_TEXT, anchor=anchor)
 
-    _draw_statue_badge(draw, 1190, y + 12, player.statue_buff_count, size=18)
-
     inventory = _ordered_inventory(snapshot, player)
     mapped_inventory = bool(snapshot.items)
     for slot in range(12):
@@ -741,7 +740,13 @@ def _draw_statue_details(
     x: int,
     y: int,
 ) -> None:
-    _draw_statue_badge(draw, x, y + 20, player.statue_buff_count, size=19)
+    draw.text(
+        (x, y + 24),
+        f"TOTAL {player.statue_buff_count}",
+        font=_font(11, bold=True),
+        fill=_GOLD,
+        anchor="lm",
+    )
     stats = (
         ("HP", "health"),
         ("WP", "weapon_power"),

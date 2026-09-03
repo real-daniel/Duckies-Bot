@@ -134,7 +134,6 @@ class DeadlockWatchView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         custom_id="deadlock_watch:statues",
         row=1,
-        emoji="🏆",
     )
     async def statues(
         self,
