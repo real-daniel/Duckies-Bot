@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from io import BytesIO
 
 import discord
@@ -180,6 +181,7 @@ class DeadlockWatchView(discord.ui.View):
         return embed
 
     def update_snapshot(self, snapshot: LiveMatchSnapshot) -> None:
+        snapshot = _retain_statue_buffs(self.snapshot, snapshot)
         self._record_changes(self.snapshot, snapshot)
         self.snapshot = snapshot
         self.stream_status = "live"
@@ -326,6 +328,22 @@ def _inventory_change_events(
     if removed:
         events.append(f"{stamp} {player_name} removed {names(removed)}.")
     return events
+
+
+def _retain_statue_buffs(
+    previous: LiveMatchSnapshot,
+    current: LiveMatchSnapshot,
+) -> LiveMatchSnapshot:
+    """Keep permanent buffs when a reconnect/end snapshot no longer contains them."""
+    previous_players = {player.account_id: player for player in previous.players}
+    players = tuple(
+        replace(player, statue_buffs=old.statue_buffs)
+        if (old := previous_players.get(player.account_id)) is not None
+        and len(player.statue_buffs) < len(old.statue_buffs)
+        else player
+        for player in current.players
+    )
+    return replace(current, players=players) if players != current.players else current
 
 
 def _seconds_time(seconds: float | None) -> str:

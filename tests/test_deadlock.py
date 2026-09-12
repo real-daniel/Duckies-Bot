@@ -1572,6 +1572,32 @@ class DeadlockWatchViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(embed)
         self.assertEqual(view.scoreboard_layout, "discord")
 
+    async def test_end_snapshot_keeps_last_known_statue_buffs(self) -> None:
+        buffs = (
+            StatueBuff("health", 1, 305643471, serial_number=10, entry_id=20),
+            StatueBuff("spirit", 2, 3992882918, serial_number=11, entry_id=21),
+        )
+        initial = LiveMatchSnapshot(
+            123,
+            1_200,
+            (LivePlayer(1001, "Ducky", 1, 2, 1, 4, 2, 8, 30_000, statue_buffs=buffs),),
+        )
+        final_without_modifier_table = LiveMatchSnapshot(
+            123,
+            1_260,
+            (LivePlayer(1001, "Ducky", 1, 2, 1, 5, 2, 9, 32_000),),
+        )
+        view = DeadlockWatchView(initial, requester_id=42)
+
+        view.update_snapshot(final_without_modifier_table)
+        view.set_stream_status("ended")
+
+        player = view.snapshot.players[0]
+        self.assertEqual(player.net_worth, 32_000)
+        self.assertEqual(player.statue_buffs, buffs)
+        self.assertEqual(player.statue_buff_count, 2)
+        self.assertEqual(view.stream_status, "ended")
+
     async def test_view_keeps_selected_tab_and_records_snapshot_changes(self) -> None:
         initial = LiveMatchSnapshot(
             123,
