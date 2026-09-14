@@ -1704,7 +1704,7 @@ class DeadlockWatchViewTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DeadlockScoutViewTests(unittest.IsolatedAsyncioTestCase):
-    async def test_view_starts_on_overview_and_expires_with_disabled_buttons(self) -> None:
+    async def test_view_starts_on_overview_and_expires_with_disabled_select(self) -> None:
         report = MatchScout(
             match_id=123,
             game_time_seconds=10,
@@ -1720,15 +1720,20 @@ class DeadlockScoutViewTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         view = DeadlockScoutView(report, requester_id=42)
-        buttons = {button.custom_id: button for button in view.children}
 
         self.assertIsNone(view.player_index)
-        self.assertTrue(buttons["deadlock_scout:overview"].disabled)
-        self.assertFalse(buttons["deadlock_scout:next"].disabled)
+        self.assertEqual(view.page_select.custom_id, "deadlock_scout:page")
+        self.assertEqual(
+            [option.label for option in view.page_select.options],
+            ["Lobby overview", "Ducky"],
+        )
+        self.assertTrue(view.page_select.options[0].default)
+        self.assertFalse(view.page_select.disabled)
+        self.assertEqual(view.render().image.url, "attachment://deadlock-scout.png")
 
         view.player_index = 0
-        view._sync_buttons()
-        self.assertFalse(buttons["deadlock_scout:overview"].disabled)
+        view._sync_select()
+        self.assertTrue(view.page_select.options[1].default)
 
         class FakeResponse:
             def __init__(self) -> None:
@@ -1742,13 +1747,12 @@ class DeadlockScoutViewTests(unittest.IsolatedAsyncioTestCase):
                 self.response = FakeResponse()
 
         interaction = FakeInteraction()
-        await view.next_player.callback(interaction)  # type: ignore[arg-type]
+        await view.render_interaction(interaction)  # type: ignore[arg-type]
         self.assertIn("embed", interaction.response.edits[-1])
-        await view.overview.callback(interaction)  # type: ignore[arg-type]
-        self.assertIn("embeds", interaction.response.edits[-1])
+        self.assertNotIn("embeds", interaction.response.edits[-1])
 
         await view.on_timeout()
-        self.assertTrue(all(button.disabled for button in view.children))
+        self.assertTrue(view.page_select.disabled)
 
 
 class DeadlockPlayerSearchViewTests(unittest.IsolatedAsyncioTestCase):

@@ -325,6 +325,30 @@ class DeadlockService:
             if payload
         }
 
+    async def scout_hero_icons(self, scout: MatchScout) -> dict[int, bytes]:
+        """Return cached hero portraits used by a graphical scouting report."""
+        heroes = tuple(
+            {player.hero.hero_id: player.hero for player in scout.players if player.hero and player.hero.icon_url}.values()
+        )
+        if not heroes:
+            return {}
+        resolved = await asyncio.gather(
+            *(
+                self._get_asset_icon(
+                    hero.hero_id,
+                    hero.icon_url,
+                    self._hero_icon_cache,
+                    self._hero_icon_locks,
+                )
+                for hero in heroes
+            )
+        )
+        return {
+            hero.hero_id: payload
+            for hero, payload in zip(heroes, resolved, strict=True)
+            if payload
+        }
+
     async def _enrich_live_snapshot(
         self,
         snapshot: LiveMatchSnapshot,
