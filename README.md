@@ -19,10 +19,10 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   mode crops and reads only the bottom-right quadrant locally. It waits for the
   broadcast roster, then shows each player's rank, total recorded games, current
   hero game share and win rate, and latest five recorded results. Enrichment is cached for 15
-  minutes. The result opens on a full roster overview with buttons to cycle
-  through detailed player cards. Each detailed card also lists the player's five
+  minutes. The result opens as a graphical full-lobby overview with a dropdown
+  for navigating to detailed player cards. Each detailed card also lists the player's five
   most-played heroes with games, win rate, and play share; only the requester can
-  control the buttons.
+  control the dropdown.
 - `/deadlock scout-preview` is an owner-only formatting sandbox. It instantly
   opens the last successfully cached scouting report without contacting Docker,
   Valve, OCR, or the Deadlock API. A representative 12-player sample is used

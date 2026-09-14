@@ -24,7 +24,6 @@ from ..features.deadlock.formatter import (
     build_live_match_embed,
     build_player_lookup_embed,
     build_player_search_embeds,
-    build_scout_overview_embeds,
 )
 from ..features.deadlock.models import (
     LiveChatMessage,
@@ -36,12 +35,14 @@ from ..features.deadlock.scoreboard import (
     render_discord_scoreboard_page,
     render_live_scoreboard,
 )
+from ..features.deadlock.scout_graphic import render_scout_graphic
 from ..providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
 from ..storage import CompanionPairing, CompanionPairingRepository, SteamLinkRepository
 from ..views import (
     DeadlockPlayerSearchView,
     DeadlockScoutView,
     DeadlockWatchView,
+    SCOUT_GRAPHIC_FILENAME,
     WATCH_SCOREBOARD_FILENAME,
 )
 
@@ -1170,13 +1171,31 @@ class DeadlockCog(commands.Cog):
             requester_id=interaction.user.id,
             highlighted_account_id=highlighted_id,
         )
+        view.attachment_renderer = self._render_scout_graphic
+        graphic = await self._render_scout_graphic(view)
         message = await interaction.followup.send(
-            embeds=list(build_scout_overview_embeds(report, highlighted_id)),
+            embed=view.render(),
+            file=discord.File(BytesIO(graphic), filename=SCOUT_GRAPHIC_FILENAME),
             view=view,
             wait=True,
             ephemeral=ephemeral,
         )
         view.message = message
+
+    async def _render_scout_graphic(self, view: DeadlockScoutView) -> bytes:
+        icon_loader = getattr(self.service, "scout_hero_icons", None)
+        hero_icons = (
+            await icon_loader(view.scout)
+            if callable(icon_loader)
+            else {}
+        )
+        return await asyncio.to_thread(
+            render_scout_graphic,
+            view.scout,
+            view.player_index,
+            view.highlighted_account_id,
+            hero_icons=hero_icons,
+        )
 
 
 async def _read_deadlock_screenshot(attachment: discord.Attachment) -> bytes:
