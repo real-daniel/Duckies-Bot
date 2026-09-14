@@ -46,7 +46,7 @@ class DeadlockService:
         self.client = client
         self.live_client = live_client
         self.broadcast_urls = broadcast_urls
-        self._profile_cache: dict[int, _CachedProfile] = {}
+        self._profile_cache: dict[tuple[int, bool], _CachedProfile] = {}
         self._experience_cache: dict[tuple[int, int], _CachedExperience] = {}
         self._total_matches_cache: dict[int, _CachedTotalMatches] = {}
         self._hero_cache: dict[int, HeroSummary] = {}
@@ -175,6 +175,10 @@ class DeadlockService:
 
     async def scout_match(self, match_id: int) -> MatchScout:
         snapshot = await self._live_match_with_retries(match_id)
+        return await self.scout_snapshot(snapshot)
+
+    async def scout_snapshot(self, snapshot: LiveMatchSnapshot) -> MatchScout:
+        """Build a scouting report from an already-open live match snapshot."""
         pairs = {
             (player.account_id, player.hero_id)
             for player in snapshot.players
@@ -182,9 +186,12 @@ class DeadlockService:
         }
         profile_limit = asyncio.Semaphore(8)
         profiles_task = asyncio.gather(
-            *(self._get_profile(player.account_id, profile_limit) for player in snapshot.players)
+            *(
+                self._get_profile(player.account_id, profile_limit, ranked_history=True)
+                for player in snapshot.players
+            )
         )
-        experiences_task = self._get_experiences(pairs)
+        experiences_task = self._get_experiences(pairs, match_mode="ranked")
         rank_assets_task = self._get_rank_assets()
         profiles, experience_data, rank_assets = await asyncio.gather(
             profiles_task,
@@ -431,27 +438,32 @@ class DeadlockService:
         self,
         account_id: int,
         limit: asyncio.Semaphore,
+        *,
+        ranked_history: bool = False,
     ) -> _CachedProfile:
         now = time.monotonic()
-        cached = self._profile_cache.get(account_id)
+        cache_key = (account_id, ranked_history)
+        cached = self._profile_cache.get(cache_key)
         if cached is not None and cached.expires_at > now:
             return cached
         async with limit:
             rank_result, history_result = await asyncio.gather(
                 self._try_get_rank(account_id),
-                self._try_get_history(account_id),
+                self._try_get_history(account_id, ranked_only=ranked_history),
             )
         cached = _CachedProfile(
             expires_at=now + 15 * 60,
             rank=rank_result,
             history=history_result,
         )
-        self._profile_cache[account_id] = cached
+        self._profile_cache[cache_key] = cached
         return cached
 
     async def _get_experiences(
         self,
         pairs: set[tuple[int, int]],
+        *,
+        match_mode: str | None = None,
     ) -> tuple[
         tuple[HeroExperience, ...],
         dict[int, int],
@@ -469,6 +481,7 @@ class DeadlockService:
             try:
                 fetched = await self.client.get_hero_experience(
                     sorted(missing_accounts),
+                    match_mode=match_mode,
                 )
             except DeadlockAPIError:
                 fetched = None
@@ -633,9 +646,17 @@ class DeadlockService:
         except DeadlockAPIError:
             return None
 
-    async def _try_get_history(self, account_id: int) -> PlayerHistory | None:
+    async def _try_get_history(
+        self,
+        account_id: int,
+        *,
+        ranked_only: bool = False,
+    ) -> PlayerHistory | None:
         try:
-            return await self.client.get_player_history(account_id)
+            return await self.client.get_player_history(
+                account_id,
+                match_mode=4 if ranked_only else None,
+            )
         except DeadlockAPIError:
             return None
 

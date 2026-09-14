@@ -17,8 +17,8 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
 - `/deadlock scout match_id:<id-or-top-200> screenshot:<image>` is intended for the start of
   a match. Provide either the numeric ID or a full game screenshot; screenshot
   mode crops and reads only the bottom-right quadrant locally. It waits for the
-  broadcast roster, then shows each player's rank, total recorded games, current
-  hero game share and win rate, and latest five recorded results. Enrichment is cached for 15
+  broadcast roster, then shows each player's rank, total ranked games, ranked
+  hero game share and win rate, and latest five ranked results. Enrichment is cached for 15
   minutes. The result opens as a graphical full-lobby overview with a dropdown
   for navigating to detailed player cards. Each detailed card also lists the player's five
   most-played heroes with games, win rate, and play share; only the requester can
@@ -42,10 +42,13 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   match-ended states instead of silently freezing. A 45-second event inactivity
   watchdog also recovers parser connections that remain open after Valve stops
   sending frames.
-- Companion-triggered watches tolerate the normal Source TV startup delay. If
-  Valve reports `Demo not available` or the stream opens without producing a
-  player snapshot, the bot keeps the connecting notice, clears the cached
-  broadcast URL, and retries for up to five minutes.
+- Companion-triggered matches wait for a complete lobby (6v6 standard or 4v4
+  Street Brawl), post a ranked scouting graphic, wait three seconds, and then
+  open the live watch using the same complete broadcast snapshot.
+  They tolerate the normal Source TV startup delay. If Valve reports `Demo not
+  available` or the stream opens without producing a player snapshot, the bot
+  keeps the connecting notice, clears the cached broadcast URL, and retries for
+  up to five minutes.
 - Valve broadcast URLs are fetched once per match and cached in SQLite for six
   hours, including across bot restarts. Live and scouting lookups reuse the URL
   instead of repeatedly calling Deadlock API. Chat startup currently makes one

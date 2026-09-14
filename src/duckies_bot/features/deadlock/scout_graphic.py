@@ -161,16 +161,16 @@ def _player_card(
 
     stats = (
         ("RANK", _rank(player)),
-        ("RECORDED GAMES", _games(player)),
-        ("CURRENT HERO", _hero_history(player)),
-        ("RECENT FORM", " ".join(player.recent_outcomes) or "Unknown"),
+        ("RANKED GAMES", _games(player)),
+        ("RANKED ON HERO", _hero_history(player)),
+        ("RANKED FORM", " ".join(player.recent_outcomes) or "Unknown"),
     )
     for index, (label, value) in enumerate(stats):
         left = 75 + index * 265
         draw.text((left, 365), label, font=_font(15, bold=True), fill=_MUTED)
         draw.text((left, 395), _fit(draw, value, _font(23, bold=True), 235), font=_font(23, bold=True), fill=_TEXT)
 
-    draw.text((75, 485), "MOST PLAYED HEROES", font=_font(18, bold=True), fill=color)
+    draw.text((75, 485), "MOST PLAYED HEROES · RANKED", font=_font(18, bold=True), fill=color)
     top_heroes = player.top_heroes[:3]
     if not top_heroes:
         draw.text((75, 530), "No recorded hero statistics", font=_font(21), fill=_MUTED)
@@ -227,7 +227,7 @@ def _rank(player: ScoutedPlayer) -> str:
 
 
 def _games(player: ScoutedPlayer) -> str:
-    return f"{player.total_matches:,} total" if player.total_matches is not None else "Unknown total"
+    return f"{player.total_matches:,} ranked" if player.total_matches is not None else "Unknown total"
 
 
 def _hero_history(player: ScoutedPlayer) -> str:

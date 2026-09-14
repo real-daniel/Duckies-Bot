@@ -176,6 +176,7 @@ class DeadlockClient:
         account_id: int,
         *,
         outcome_limit: int = 5,
+        match_mode: int | None = None,
     ) -> PlayerHistory:
         document = await self._get_json(f"/v1/players/{account_id}/match-history")
         if not isinstance(document, list):
@@ -187,6 +188,8 @@ class DeadlockClient:
         )
         outcomes: list[str] = []
         for raw in ordered:
+            if match_mode is not None and _optional_int(raw.get("match_mode")) != match_mode:
+                continue
             outcome = _optional_int(raw.get("player_match_outcome"))
             if outcome == 1:
                 outcomes.append("W")
@@ -200,12 +203,16 @@ class DeadlockClient:
         self,
         account_ids: Sequence[int],
         hero_ids: Sequence[int] | None = None,
+        *,
+        match_mode: str | None = None,
     ) -> tuple[HeroExperience, ...]:
         if not account_ids:
             return ()
         params = [*(('account_ids', str(value)) for value in sorted(set(account_ids)))]
         if hero_ids:
             params.append(("hero_ids", ",".join(str(value) for value in sorted(set(hero_ids)))))
+        if match_mode:
+            params.append(("match_mode", match_mode))
         document = await self._get_json("/v1/players/hero-stats", params=params)
         if not isinstance(document, list):
             raise InvalidDeadlockResponseError()
