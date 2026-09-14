@@ -157,7 +157,7 @@ def sample_scout_template() -> MatchScout:
 
 def _scout_to_dict(scout: MatchScout) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "match_id": scout.match_id,
         "game_time_seconds": scout.game_time_seconds,
         "players": [
@@ -229,7 +229,7 @@ def _scout_to_dict(scout: MatchScout) -> dict[str, Any]:
 
 
 def _scout_from_dict(document: Any) -> MatchScout:
-    if not isinstance(document, dict) or document.get("version") != 1:
+    if not isinstance(document, dict) or document.get("version") != 2:
         raise ValueError("Unsupported Deadlock scouting template")
     players: list[ScoutedPlayer] = []
     for raw in document.get("players", []):

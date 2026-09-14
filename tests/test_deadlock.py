@@ -38,6 +38,7 @@ from duckies_bot.features.deadlock.models import (
 from duckies_bot.providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
 from duckies_bot.providers.deadlock.client import DeadlockClient
 from duckies_bot.providers.deadlock.live_client import DeadlockLiveClient
+from duckies_bot.storage import CompanionPairing
 from duckies_bot.views import (
     DeadlockPlayerSearchView,
     DeadlockScoutView,
@@ -240,9 +241,10 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
                 FakeResponse({"badge": 85, "rank": 8, "subrank": 5}),
                 FakeResponse(
                     [
-                        {"start_time": 20, "player_match_outcome": 2},
-                        {"start_time": 30, "player_match_outcome": 1},
-                        {"start_time": 10, "player_match_outcome": 5},
+                        {"start_time": 20, "player_match_outcome": 2, "match_mode": 4},
+                        {"start_time": 30, "player_match_outcome": 1, "match_mode": 4},
+                        {"start_time": 25, "player_match_outcome": 1, "match_mode": 1},
+                        {"start_time": 10, "player_match_outcome": 5, "match_mode": 4},
                     ]
                 ),
                 FakeResponse(
@@ -262,8 +264,12 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
         client = DeadlockClient(session=session)  # type: ignore[arg-type]
 
         rank = await client.get_player_rank(123)
-        history = await client.get_player_history(123)
-        experience = await client.get_hero_experience([123, 456], [69])
+        history = await client.get_player_history(123, match_mode=4)
+        experience = await client.get_hero_experience(
+            [123, 456],
+            [69],
+            match_mode="ranked",
+        )
         assets = await client.get_rank_assets()
 
         self.assertEqual(rank, PlayerRank(8, 5))
@@ -272,7 +278,12 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(assets, (RankAsset(8, "Oracle"),))
         self.assertEqual(
             session.requests[2][1],
-            [("account_ids", "123"), ("account_ids", "456"), ("hero_ids", "69")],
+            [
+                ("account_ids", "123"),
+                ("account_ids", "456"),
+                ("hero_ids", "69"),
+                ("match_mode", "ranked"),
+            ],
         )
 
     async def test_fetches_and_searches_steam_profiles(self) -> None:
@@ -885,7 +896,9 @@ class FakeScoutAPI:
     def __init__(self) -> None:
         self.rank_calls = 0
         self.history_calls = 0
+        self.history_match_modes: list[int | None] = []
         self.experience_calls = 0
+        self.experience_match_modes: list[str | None] = []
         self.asset_calls = 0
         self.broadcast_url_calls = 0
         self.hero_asset_calls = 0
@@ -963,16 +976,25 @@ class FakeScoutAPI:
         self.rank_calls += 1
         return PlayerRank(8, 5)
 
-    async def get_player_history(self, account_id: int) -> PlayerHistory:
+    async def get_player_history(
+        self,
+        account_id: int,
+        *,
+        match_mode: int | None = None,
+    ) -> PlayerHistory:
         self.history_calls += 1
+        self.history_match_modes.append(match_mode)
         return PlayerHistory(account_id, ("W", "L"))
 
     async def get_hero_experience(
         self,
         account_ids: list[int],
         hero_ids: list[int] | None = None,
+        *,
+        match_mode: str | None = None,
     ):
         self.experience_calls += 1
+        self.experience_match_modes.append(match_mode)
         return tuple(
             experience
             for account_id in account_ids
@@ -1016,6 +1038,48 @@ class FakeScoutLiveClient:
                 LivePlayer(1002, "Goose", 1, 3, 7, 0, 0, 0, 0),
             ),
         )
+
+
+def _companion_snapshot(player_count: int = 12) -> LiveMatchSnapshot:
+    return LiveMatchSnapshot(
+        123,
+        10,
+        tuple(
+            LivePlayer(
+                2000 + index,
+                f"Player {index}",
+                index,
+                2 if index < 6 else 3,
+                index + 1,
+                0,
+                0,
+                0,
+                0,
+            )
+            for index in range(player_count)
+        ),
+    )
+
+
+def _street_brawl_snapshot() -> LiveMatchSnapshot:
+    return LiveMatchSnapshot(
+        123,
+        10,
+        tuple(
+            LivePlayer(
+                3000 + index,
+                f"Brawler {index}",
+                index,
+                2 if index < 4 else 3,
+                index + 1,
+                0,
+                0,
+                0,
+                0,
+            )
+            for index in range(8)
+        ),
+    )
 
 
 class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -1090,7 +1154,7 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_companion_waits_for_delayed_demo_then_opens_watch(self) -> None:
-        snapshot = LiveMatchSnapshot(123, 0, ())
+        snapshot = _companion_snapshot()
 
         class DelayedDemoService:
             def __init__(self) -> None:
@@ -1128,8 +1192,61 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
         notice.edit.assert_awaited_once()
         await stream.aclose()
 
+    async def test_companion_waits_past_partial_roster_for_all_players(self) -> None:
+        partial = _companion_snapshot(4)
+        eight_player_standard_partial = _companion_snapshot(8)
+        complete = _companion_snapshot()
+        invalid_slot = LivePlayer(0, "Connecting…", None, 3, 11, 0, 0, 0, 0)
+        twelve_slots_but_one_disconnected = LiveMatchSnapshot(
+            123,
+            9,
+            (*complete.players[:11], invalid_slot),
+        )
+
+        class GrowingRosterService:
+            def stream_live_match(self, _match_id: int):
+                async def generate():
+                    yield partial
+                    yield eight_player_standard_partial
+                    yield twelve_slots_but_one_disconnected
+                    yield complete
+
+                return generate()
+
+        cog = object.__new__(DeadlockCog)
+        cog.service = GrowingRosterService()
+        notice = SimpleNamespace(edit=AsyncMock())
+
+        stream, received = await cog._wait_for_companion_demo(123, notice)
+
+        self.assertEqual(received, complete)
+        self.assertEqual(len(received.players), 12)
+        notice.edit.assert_not_awaited()
+        await stream.aclose()
+
+    async def test_companion_accepts_complete_street_brawl_roster(self) -> None:
+        street_brawl = _street_brawl_snapshot()
+
+        class StreetBrawlService:
+            def stream_live_match(self, _match_id: int):
+                async def generate():
+                    yield street_brawl
+
+                return generate()
+
+        cog = object.__new__(DeadlockCog)
+        cog.service = StreetBrawlService()
+        notice = SimpleNamespace(edit=AsyncMock())
+
+        stream, received = await cog._wait_for_companion_demo(123, notice)
+
+        self.assertEqual(received, street_brawl)
+        self.assertEqual(len(received.players), 8)
+        notice.edit.assert_not_awaited()
+        await stream.aclose()
+
     async def test_companion_retries_quiet_broadcast_then_opens_watch(self) -> None:
-        snapshot = LiveMatchSnapshot(123, 0, ())
+        snapshot = _companion_snapshot()
 
         class QuietDemoService:
             def __init__(self) -> None:
@@ -1242,6 +1359,89 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.invalidated, [123])
         notice.edit.assert_not_awaited()
 
+    async def test_companion_posts_scout_then_delays_then_starts_watch(self) -> None:
+        events: list[str] = []
+        snapshot = _companion_snapshot()
+        report = MatchScout(123, 10, ())
+
+        async def stream():
+            if False:
+                yield snapshot
+
+        class FakeMessage:
+            id = 55
+
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            async def edit(self, **kwargs: object) -> None:
+                attachments = kwargs.get("attachments")
+                if attachments:
+                    events.append("scout")
+                    for attachment in attachments:  # type: ignore[union-attr]
+                        attachment.close()
+
+        class FakeChannel:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def send(self, *args: object, **kwargs: object) -> FakeMessage:
+                del args
+                self.calls += 1
+                if self.calls == 1:
+                    events.append("notice")
+                    return FakeMessage("notice")
+                events.append("watch")
+                file = kwargs.get("file")
+                if file is not None:
+                    file.close()  # type: ignore[union-attr]
+                return FakeMessage("watch")
+
+        class FakeBot:
+            async def wait_until_ready(self) -> None:
+                pass
+
+            def get_guild(self, _guild_id: int) -> object:
+                return object()
+
+            def get_channel(self, _channel_id: int) -> FakeChannel:
+                return channel
+
+        class FakeService:
+            async def scout_snapshot(self, received: LiveMatchSnapshot) -> MatchScout:
+                self.received = received
+                return report
+
+        async def record_delay(_delay: float) -> None:
+            events.append("delay")
+
+        async def finish_watch(*_args: object) -> None:
+            pass
+
+        channel = FakeChannel()
+        cog = object.__new__(DeadlockCog)
+        cog.bot = FakeBot()
+        cog.service = FakeService()
+        cog.links = SimpleNamespace(get=AsyncMock(return_value=None))
+        cog.scout_templates = SimpleNamespace(save=AsyncMock())
+        cog._live_watches = {}
+        cog._wait_for_companion_demo = AsyncMock(return_value=(stream(), snapshot))
+        cog._render_scout_graphic = AsyncMock(return_value=b"scout")
+        cog._render_watch_scoreboard = AsyncMock(return_value=b"watch")
+        cog._update_live_watch = finish_watch
+        pairing = CompanionPairing("token", 42, 10, 100)
+
+        with (
+            patch("duckies_bot.cogs.deadlock.discord.TextChannel", FakeChannel),
+            patch("duckies_bot.cogs.deadlock.asyncio.sleep", side_effect=record_delay),
+        ):
+            await cog.start_companion_watch(pairing, 123)
+
+        self.assertEqual(events[:4], ["notice", "scout", "delay", "watch"])
+        self.assertEqual(cog.service.received, snapshot)
+        self.assertEqual(cog._live_watches[(10, 123)].message.name, "watch")
+        await asyncio.sleep(0)
+
     async def test_match_id_token_resolves_numeric_and_top_200_values(self) -> None:
         api = FakeScoutAPI()
         service = DeadlockService(api)  # type: ignore[arg-type]
@@ -1276,7 +1476,9 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(second.players), 2)
         self.assertEqual(api.rank_calls, 2)
         self.assertEqual(api.history_calls, 2)
+        self.assertEqual(api.history_match_modes, [4, 4])
         self.assertEqual(api.experience_calls, 1)
+        self.assertEqual(api.experience_match_modes, ["ranked"])
         self.assertEqual(api.asset_calls, 1)
         self.assertEqual(api.hero_asset_calls, 1)
         self.assertEqual(api.item_asset_calls, 1)
@@ -1294,6 +1496,19 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
                 "https://relay.example.test/match/123",
             ],
         )
+
+    async def test_scout_snapshot_reuses_an_open_companion_roster(self) -> None:
+        api = FakeScoutAPI()
+        live_client = FakeScoutLiveClient()
+        service = DeadlockService(api, live_client)  # type: ignore[arg-type]
+        snapshot = await live_client.get_match_players(123, "already-open")
+
+        report = await service.scout_snapshot(snapshot)
+
+        self.assertEqual(report.match_id, 123)
+        self.assertEqual(api.broadcast_url_calls, 0)
+        self.assertEqual(api.history_match_modes, [4, 4])
+        self.assertEqual(api.experience_match_modes, ["ranked"])
 
     async def test_live_match_maps_shopable_upgrade_ids_to_items(self) -> None:
         api = FakeScoutAPI()
@@ -1729,7 +1944,7 @@ class DeadlockScoutViewTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(view.page_select.options[0].default)
         self.assertFalse(view.page_select.disabled)
-        self.assertEqual(view.render().image.url, "attachment://deadlock-scout.png")
+        self.assertFalse(hasattr(view, "render"))
 
         view.player_index = 0
         view._sync_select()
@@ -1748,7 +1963,7 @@ class DeadlockScoutViewTests(unittest.IsolatedAsyncioTestCase):
 
         interaction = FakeInteraction()
         await view.render_interaction(interaction)  # type: ignore[arg-type]
-        self.assertIn("embed", interaction.response.edits[-1])
+        self.assertIsNone(interaction.response.edits[-1]["embed"])
         self.assertNotIn("embeds", interaction.response.edits[-1])
 
         await view.on_timeout()

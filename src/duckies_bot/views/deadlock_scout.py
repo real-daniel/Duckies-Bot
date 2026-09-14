@@ -7,7 +7,6 @@ from io import BytesIO
 
 import discord
 
-from ..features.deadlock.formatter import build_scout_overview_embeds, build_scout_player_embed
 from ..features.deadlock.models import MatchScout
 
 
@@ -60,28 +59,15 @@ class DeadlockScoutView(discord.ui.View):
         )
         return False
 
-    def render(self) -> discord.Embed:
-        if self.player_index is None:
-            embed = build_scout_overview_embeds(self.scout, self.highlighted_account_id)[0]
-        else:
-            embed = build_scout_player_embed(
-                self.scout,
-                self.player_index,
-                self.highlighted_account_id,
-            )
-            embed.clear_fields()
-        embed.set_image(url=f"attachment://{SCOUT_GRAPHIC_FILENAME}")
-        return embed
-
     async def render_interaction(self, interaction: discord.Interaction) -> None:
         self._sync_select()
         if self.attachment_renderer is None:
-            await interaction.response.edit_message(embed=self.render(), view=self)
+            await interaction.response.edit_message(embed=None, view=self)
             return
         await interaction.response.defer()
         graphic = await self.attachment_renderer(self)
         await interaction.edit_original_response(
-            embed=self.render(),
+            embed=None,
             attachments=[discord.File(BytesIO(graphic), filename=SCOUT_GRAPHIC_FILENAME)],
             view=self,
         )

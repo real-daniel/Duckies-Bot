@@ -93,6 +93,7 @@ _WATCH_END_CONFIRMATIONS = 2
 _COMPANION_DEMO_RETRY_DELAYS = (10.0, 20.0, 30.0, 45.0, 60.0)
 _COMPANION_DEMO_ATTEMPT_TIMEOUT_SECONDS = 45.0
 _COMPANION_DEMO_STARTUP_TIMEOUT_SECONDS = 5 * 60.0
+_COMPANION_SCOUT_WATCH_DELAY_SECONDS = 3.0
 
 
 class DeadlockCog(commands.Cog):
@@ -619,7 +620,7 @@ class DeadlockCog(commands.Cog):
             return
 
         notice = await channel.send(
-            f"Companion detected match `{match_id}`. Connecting to the delayed live broadcast…",
+            f"Companion detected match `{match_id}`. Waiting for the full lobby to connect…",
             allowed_mentions=discord.AllowedMentions.none(),
         )
         stream: AsyncIterator[LiveMatchSnapshot] | None = None
@@ -656,31 +657,61 @@ class DeadlockCog(commands.Cog):
             return
 
         account = await self.links.get(pairing.discord_user_id)
+        highlighted_id = account.account_id if account is not None else None
+        try:
+            report = await self.service.scout_snapshot(first_snapshot)
+            try:
+                await self.scout_templates.save(report)
+            except Exception:
+                LOGGER.warning("Could not refresh the local scouting template", exc_info=True)
+            scout_view = DeadlockScoutView(
+                report,
+                requester_id=pairing.discord_user_id,
+                highlighted_account_id=highlighted_id,
+            )
+            scout_view.attachment_renderer = self._render_scout_graphic
+            scout_png = await self._render_scout_graphic(scout_view)
+            await notice.edit(
+                content=None,
+                embed=None,
+                attachments=[
+                    discord.File(BytesIO(scout_png), filename=SCOUT_GRAPHIC_FILENAME)
+                ],
+                view=scout_view,
+            )
+            scout_view.message = notice
+        except Exception:
+            LOGGER.exception("Could not build companion scout for match %d", match_id)
+            await notice.edit(
+                content=(
+                    f"Companion detected match `{match_id}`. Scouting was unavailable; "
+                    "starting the live watch…"
+                )
+            )
+
+        await asyncio.sleep(_COMPANION_SCOUT_WATCH_DELAY_SECONDS)
         view = DeadlockWatchView(
             first_snapshot,
             requester_id=pairing.discord_user_id,
-            highlighted_account_id=account.account_id if account is not None else None,
+            highlighted_account_id=highlighted_id,
             embed_scoreboard=False,
             scoreboard_layout="discord",
         )
         view.attachment_renderer = self._render_watch_scoreboard
         scoreboard_png = await self._render_watch_scoreboard(view)
-        await notice.edit(
-            content=None,
+        watch_message = await channel.send(
             embed=view.render(),
-            attachments=[
-                discord.File(BytesIO(scoreboard_png), filename=WATCH_SCOREBOARD_FILENAME)
-            ],
+            file=discord.File(BytesIO(scoreboard_png), filename=WATCH_SCOREBOARD_FILENAME),
             view=view,
         )
-        view.message = notice
+        view.message = watch_message
         assert stream is not None
         task = asyncio.create_task(
-            self._update_live_watch(key, stream, notice, view, first_snapshot),
+            self._update_live_watch(key, stream, watch_message, view, first_snapshot),
             name=f"deadlock-watch-{pairing.guild_id}-{match_id}",
         )
         self._live_watches[key] = _LiveWatch(
-            notice,
+            watch_message,
             pairing.discord_user_id,
             task,
             view,
@@ -720,14 +751,27 @@ class DeadlockCog(commands.Cog):
             stream = self.service.stream_live_match(match_id)
             try:
                 async with asyncio.timeout(attempt_timeout):
-                    return stream, await anext(stream)
+                    while True:
+                        snapshot = await anext(stream)
+                        if _complete_companion_roster(snapshot):
+                            return stream, snapshot
+                        connected_accounts = {
+                            player.account_id
+                            for player in snapshot.players
+                            if player.account_id > 0
+                        }
+                        LOGGER.info(
+                            "Companion match %d roster is partial (%d players); waiting",
+                            match_id,
+                            len(connected_accounts),
+                        )
             except (LiveDemoUnavailableError, TimeoutError) as exc:
                 await stream.aclose()
                 await self.service.invalidate_broadcast_url(match_id)
                 reason = (
                     "Valve reported demo unavailable"
                     if isinstance(exc, LiveDemoUnavailableError)
-                    else "no player snapshot arrived before the attempt timeout"
+                    else "a complete standard or Street Brawl roster did not arrive before the attempt timeout"
                 )
                 remaining = deadline - loop.time()
                 if attempt >= len(_COMPANION_DEMO_RETRY_DELAYS) or remaining <= 0:
@@ -1174,7 +1218,6 @@ class DeadlockCog(commands.Cog):
         view.attachment_renderer = self._render_scout_graphic
         graphic = await self._render_scout_graphic(view)
         message = await interaction.followup.send(
-            embed=view.render(),
             file=discord.File(BytesIO(graphic), filename=SCOUT_GRAPHIC_FILENAME),
             view=view,
             wait=True,
@@ -1213,6 +1256,24 @@ async def _read_deadlock_screenshot(attachment: discord.Attachment) -> bytes:
     if not image:
         raise InvalidDeadlockScreenshotError("The uploaded screenshot was empty.")
     return image
+
+
+def _complete_companion_roster(snapshot: LiveMatchSnapshot) -> bool:
+    """Accept only a complete 6v6 standard or 4v4 Street Brawl slot layout."""
+    players = tuple(player for player in snapshot.players if player.account_id > 0)
+    if len({player.account_id for player in players}) != len(players):
+        return False
+    team_slots = {
+        team: {player.player_slot for player in players if player.team == team}
+        for team in (2, 3)
+    }
+    return team_slots == {
+        2: set(range(1, 7)),
+        3: set(range(7, 13)),
+    } or team_slots == {
+        2: set(range(1, 5)),
+        3: set(range(5, 9)),
+    }
 
 
 def _thread_parent(
