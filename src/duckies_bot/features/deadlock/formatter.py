@@ -339,11 +339,14 @@ def build_scout_overview_embeds(
         teams.setdefault(player.player.team, []).append(player)
     embeds: list[discord.Embed] = [header]
     for team, players in sorted(teams.items(), key=lambda item: item[0] or 99):
-        wins = sum(player.recent_outcomes.count("W") for player in players)
-        losses = sum(player.recent_outcomes.count("L") for player in players)
+        matches = sum(player.total_matches or 0 for player in players)
+        wins = sum(player.total_wins or 0 for player in players)
+        win_rate = wins / matches if matches > 0 else None
         team_embed = make_embed(
             _team_name(team),
-            f"{len(players)} players · Combined recent form **{wins}–{losses}**",
+            f"{len(players)} players · Team ranked win rate **{win_rate:.0%}**"
+            if win_rate is not None
+            else f"{len(players)} players · Team ranked win rate unavailable",
             tone=_team_tone(team),
         )
         for player in players:
@@ -556,12 +559,17 @@ def _scout_overview_card(player: ScoutedPlayer) -> str:
         if player.player.hero_id is not None
         else "Unknown hero"
     )
-    form = " ".join(player.recent_outcomes) if player.recent_outcomes else "No recent form"
+    win_rate = player.ranked_win_rate
+    if win_rate is not None and player.total_wins is not None and player.total_matches is not None:
+        losses = max(player.total_matches - player.total_wins, 0)
+        win_rate_text = f"{player.total_wins:,}W–{losses:,}L | {win_rate:.0%}"
+    else:
+        win_rate_text = "Unknown ranked record"
     return (
         f"**{hero_name}**\n"
         f"{_scout_rank(player)} · {_total_games(player)}\n"
         f"{_hero_history(player)}\n"
-        f"`{form}`"
+        f"`{win_rate_text}`"
     )
 
 

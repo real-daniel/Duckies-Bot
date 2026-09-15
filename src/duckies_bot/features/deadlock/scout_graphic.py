@@ -90,12 +90,13 @@ def _overview(
         left = 25 + column * 590
         players = grouped.get(team, [])
         color = _team_color(team)
-        wins = sum(item.recent_outcomes.count("W") for item in players)
-        losses = sum(item.recent_outcomes.count("L") for item in players)
+        team_matches = sum(item.total_matches or 0 for item in players)
+        team_wins = sum(item.total_wins or 0 for item in players)
+        team_win_rate = team_wins / team_matches if team_matches > 0 else None
         draw.text((left + 10, 121), _team_name(team).upper(), font=_font(30, bold=True), fill=color)
         draw.text(
             (left + 555, 128),
-            f"RECENT FORM  {wins}-{losses}",
+            f"TEAM RANKED WR  {team_win_rate:.0%}" if team_win_rate is not None else "TEAM RANKED WR  —",
             font=_font(17, bold=True),
             fill=(*color, 225),
             anchor="ra",
@@ -133,8 +134,16 @@ def _overview_row(
     draw.text((left + 88, top + 43), _fit(draw, hero, _font(17), 225), font=_font(17), fill=_MUTED)
     draw.text((left + 332, top + 13), _rank(player), font=_font(18, bold=True), fill=color)
     draw.text((left + 332, top + 44), _games(player), font=_font(16), fill=_MUTED)
-    form = "".join(player.recent_outcomes) or "—"
-    draw.text((right - 16, top + 28), form, font=_font(19, bold=True), fill=_form_color(player), anchor="ra")
+    win_rate = player.ranked_win_rate
+    value = _ranked_record(player)
+    value_font = _font(17, bold=True)
+    draw.text(
+        (right - 16, top + 28),
+        _fit(draw, value, value_font, 205),
+        font=value_font,
+        fill=_win_rate_color(win_rate),
+        anchor="ra",
+    )
 
 
 def _player_card(
@@ -241,10 +250,17 @@ def _hero_history(player: ScoutedPlayer) -> str:
     return value
 
 
-def _form_color(player: ScoutedPlayer) -> tuple[int, int, int]:
-    wins = player.recent_outcomes.count("W")
-    losses = player.recent_outcomes.count("L")
-    return (85, 205, 135) if wins > losses else (221, 104, 91) if losses > wins else _MUTED
+def _ranked_record(player: ScoutedPlayer) -> str:
+    if player.total_matches is None or player.total_wins is None or player.total_matches <= 0:
+        return "—"
+    losses = max(player.total_matches - player.total_wins, 0)
+    return f"{player.total_wins:,}W–{losses:,}L | {player.ranked_win_rate:.0%}"
+
+
+def _win_rate_color(win_rate: float | None) -> tuple[int, int, int]:
+    if win_rate is None:
+        return _MUTED
+    return (85, 205, 135) if win_rate >= 0.5 else (221, 104, 91)
 
 
 def _team_color(team: int | None) -> tuple[int, int, int]:

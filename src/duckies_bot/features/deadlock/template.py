@@ -130,6 +130,7 @@ def sample_scout_template() -> MatchScout:
                 if index % 3
                 else ("L", "L", "W", "L", "W"),
                 total_matches=games * 4 + 20,
+                total_wins=round((games * 4 + 20) * (0.42 + (index % 5) * 0.04)),
                 top_heroes=tuple(
                     HeroRecord(
                         experience=HeroExperience(
@@ -157,7 +158,7 @@ def sample_scout_template() -> MatchScout:
 
 def _scout_to_dict(scout: MatchScout) -> dict[str, Any]:
     return {
-        "version": 2,
+        "version": 3,
         "match_id": scout.match_id,
         "game_time_seconds": scout.game_time_seconds,
         "players": [
@@ -201,6 +202,7 @@ def _scout_to_dict(scout: MatchScout) -> dict[str, Any]:
                 ),
                 "recent_outcomes": list(item.recent_outcomes),
                 "total_matches": item.total_matches,
+                "total_wins": item.total_wins,
                 "top_heroes": [
                     {
                         "experience": {
@@ -229,7 +231,7 @@ def _scout_to_dict(scout: MatchScout) -> dict[str, Any]:
 
 
 def _scout_from_dict(document: Any) -> MatchScout:
-    if not isinstance(document, dict) or document.get("version") != 2:
+    if not isinstance(document, dict) or document.get("version") != 3:
         raise ValueError("Unsupported Deadlock scouting template")
     players: list[ScoutedPlayer] = []
     for raw in document.get("players", []):
@@ -246,6 +248,7 @@ def _scout_from_dict(document: Any) -> MatchScout:
                 experience=HeroExperience(**experience) if experience else None,
                 recent_outcomes=tuple(raw.get("recent_outcomes", ())),
                 total_matches=raw.get("total_matches"),
+                total_wins=raw.get("total_wins"),
                 top_heroes=tuple(
                     HeroRecord(
                         experience=HeroExperience(**record["experience"]),
