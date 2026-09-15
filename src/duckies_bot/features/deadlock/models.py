@@ -217,6 +217,7 @@ class ScoutedPlayer:
     experience: HeroExperience | None
     recent_outcomes: tuple[str, ...]
     total_matches: int | None = None
+    total_wins: int | None = None
     top_heroes: tuple[HeroRecord, ...] = ()
 
     @property
@@ -228,6 +229,12 @@ class ScoutedPlayer:
         ):
             return None
         return self.experience.matches_played / self.total_matches
+
+    @property
+    def ranked_win_rate(self) -> float | None:
+        if self.total_matches is None or self.total_wins is None or self.total_matches <= 0:
+            return None
+        return self.total_wins / self.total_matches
 
 
 @dataclass(frozen=True, slots=True)

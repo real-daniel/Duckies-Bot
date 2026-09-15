@@ -199,6 +199,12 @@ class DeadlockService:
             rank_assets_task,
         )
         experiences, total_matches_by_account, all_experiences = experience_data
+        total_wins_by_account = {
+            account_id: sum(
+                item.wins for item in all_experiences if item.account_id == account_id
+            )
+            for account_id in {player.account_id for player in snapshot.players}
+        }
         top_experiences_by_account: dict[int, tuple[HeroExperience, ...]] = {}
         top_hero_ids: set[int] = set()
         for account_id in {player.account_id for player in snapshot.players}:
@@ -237,6 +243,7 @@ class DeadlockService:
                     experience=experience_by_pair.get((player.account_id, player.hero_id)),
                     recent_outcomes=profile.history.outcomes if profile.history else (),
                     total_matches=total_matches_by_account.get(player.account_id),
+                    total_wins=total_wins_by_account.get(player.account_id),
                     top_heroes=tuple(
                         HeroRecord(
                             experience=item,

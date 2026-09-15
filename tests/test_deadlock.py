@@ -755,6 +755,7 @@ class DeadlockFormatterTests(unittest.TestCase):
                     experience=HeroExperience(1001, 1, 50, 30, 999),
                     recent_outcomes=("W", "W", "L", "W", "L"),
                     total_matches=200,
+                    total_wins=96,
                     top_heroes=(
                         HeroRecord(
                             HeroExperience(1001, 2, 80, 48, 998),
@@ -778,7 +779,7 @@ class DeadlockFormatterTests(unittest.TestCase):
         self.assertIn("**Infernus**", value)
         self.assertIn("Oracle V · 200 total games", value)
         self.assertIn("50 (25%) hero games · 60% WR", value)
-        self.assertIn("`W W L W L`", value)
+        self.assertIn("`96W–104L | 48%`", value)
 
         detail = build_scout_player_embed(scout, 0, highlighted_account_id=1001)
         self.assertIn("Player 1 of 1", detail.description)
@@ -1484,6 +1485,7 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api.item_asset_calls, 1)
         self.assertEqual(api.broadcast_url_calls, 1)
         self.assertTrue(all(player.total_matches == 50 for player in first.players))
+        self.assertTrue(all(player.total_wins == 26 for player in first.players))
         self.assertTrue(all(player.hero_match_share == 0.4 for player in first.players))
         self.assertTrue(all(len(player.top_heroes) == 2 for player in first.players))
         self.assertTrue(
