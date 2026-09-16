@@ -132,15 +132,29 @@ def _overview_row(
     hero = player.hero.name if player.hero else f"Hero {hero_id}" if hero_id is not None else "Unknown hero"
     draw.text((left + 88, top + 12), name, font=_font(20, bold=True), fill=_TEXT)
     draw.text((left + 88, top + 43), _fit(draw, hero, _font(17), 225), font=_font(17), fill=_MUTED)
-    draw.text((left + 332, top + 13), _rank(player), font=_font(18, bold=True), fill=color)
+    rank_font = _font(17, bold=True)
+    draw.text(
+        (left + 325, top + 13),
+        _fit(draw, _rank(player), rank_font, 120),
+        font=rank_font,
+        fill=color,
+    )
     draw.text((left + 332, top + 44), _games(player), font=_font(16), fill=_MUTED)
     win_rate = player.ranked_win_rate
-    value = _ranked_record(player)
-    value_font = _font(17, bold=True)
+    record, percentage = _ranked_record_lines(player)
+    record_font = _font(15, bold=True)
+    percentage_font = _font(17, bold=True)
     draw.text(
-        (right - 16, top + 28),
-        _fit(draw, value, value_font, 205),
-        font=value_font,
+        (right - 14, top + 13),
+        _fit(draw, record, record_font, 125),
+        font=record_font,
+        fill=_win_rate_color(win_rate),
+        anchor="ra",
+    )
+    draw.text(
+        (right - 14, top + 43),
+        percentage,
+        font=percentage_font,
         fill=_win_rate_color(win_rate),
         anchor="ra",
     )
@@ -250,11 +264,14 @@ def _hero_history(player: ScoutedPlayer) -> str:
     return value
 
 
-def _ranked_record(player: ScoutedPlayer) -> str:
+def _ranked_record_lines(player: ScoutedPlayer) -> tuple[str, str]:
     if player.total_matches is None or player.total_wins is None or player.total_matches <= 0:
-        return "—"
+        return "—", "—"
     losses = max(player.total_matches - player.total_wins, 0)
-    return f"{player.total_wins:,}W–{losses:,}L | {player.ranked_win_rate:.0%}"
+    return (
+        f"{player.total_wins:,}W - {losses:,}L",
+        f"{player.ranked_win_rate:.0%}",
+    )
 
 
 def _win_rate_color(win_rate: float | None) -> tuple[int, int, int]:

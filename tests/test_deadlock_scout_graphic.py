@@ -14,7 +14,10 @@ from duckies_bot.features.deadlock.models import (
     PlayerRank,
     ScoutedPlayer,
 )
-from duckies_bot.features.deadlock.scout_graphic import _ranked_record, render_scout_graphic
+from duckies_bot.features.deadlock.scout_graphic import (
+    _ranked_record_lines,
+    render_scout_graphic,
+)
 
 
 class DeadlockScoutGraphicTests(unittest.TestCase):
@@ -48,7 +51,7 @@ class DeadlockScoutGraphicTests(unittest.TestCase):
     def test_formats_ranked_record_for_overview(self) -> None:
         player = _scout().players[0]
 
-        self.assertEqual(_ranked_record(player), "101W–100L | 50%")
+        self.assertEqual(_ranked_record_lines(player), ("101W - 100L", "50%"))
 
 
 def _scout() -> MatchScout:
