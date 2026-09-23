@@ -46,7 +46,7 @@ class DeadlockService:
         self.client = client
         self.live_client = live_client
         self.broadcast_urls = broadcast_urls
-        self._profile_cache: dict[tuple[int, bool], _CachedProfile] = {}
+        self._profile_cache: dict[tuple[int, str | None], _CachedProfile] = {}
         self._experience_cache: dict[tuple[int, int], _CachedExperience] = {}
         self._total_matches_cache: dict[int, _CachedTotalMatches] = {}
         self._hero_cache: dict[int, HeroSummary] = {}
@@ -87,8 +87,11 @@ class DeadlockService:
         account_id: int,
         *,
         profile: SteamProfile | None = None,
+        match_mode: str | None = None,
     ) -> PlayerLookup:
         """Build an API-backed summary for one Deadlock player."""
+        if match_mode not in {None, "ranked", "unranked"}:
+            raise ValueError("match_mode must be ranked, unranked, or None")
         if profile is not None and profile.account_id != account_id:
             raise ValueError("profile does not belong to the requested account")
         if profile is None:
@@ -103,8 +106,12 @@ class DeadlockService:
                 )
 
         cached_profile, experiences, rank_assets = await asyncio.gather(
-            self._get_profile(account_id, asyncio.Semaphore(1)),
-            self._try_get_all_experience(account_id),
+            self._get_profile(
+                account_id,
+                asyncio.Semaphore(1),
+                history_match_mode=match_mode,
+            ),
+            self._try_get_all_experience(account_id, match_mode=match_mode),
             self._get_rank_assets(),
         )
         ordered_experiences = tuple(
@@ -113,9 +120,8 @@ class DeadlockService:
                 key=lambda item: (-item.matches_played, -item.wins, item.hero_id),
             )
         )
-        top_experiences = ordered_experiences[:5]
         heroes = await self._get_heroes(
-            tuple(item.hero_id for item in top_experiences)
+            tuple(item.hero_id for item in ordered_experiences)
         )
         rank_name = None
         if cached_profile.rank is not None:
@@ -140,8 +146,9 @@ class DeadlockService:
             total_wins=sum(item.wins for item in ordered_experiences),
             top_heroes=tuple(
                 HeroRecord(item, heroes.get(item.hero_id))
-                for item in top_experiences
+                for item in ordered_experiences
             ),
+            match_mode=match_mode,
         )
 
     async def random_top_200_match_id(self) -> int:
@@ -447,16 +454,19 @@ class DeadlockService:
         limit: asyncio.Semaphore,
         *,
         ranked_history: bool = False,
+        history_match_mode: str | None = None,
     ) -> _CachedProfile:
+        if ranked_history:
+            history_match_mode = "ranked"
         now = time.monotonic()
-        cache_key = (account_id, ranked_history)
+        cache_key = (account_id, history_match_mode)
         cached = self._profile_cache.get(cache_key)
         if cached is not None and cached.expires_at > now:
             return cached
         async with limit:
             rank_result, history_result = await asyncio.gather(
                 self._try_get_rank(account_id),
-                self._try_get_history(account_id, ranked_only=ranked_history),
+                self._try_get_history(account_id, match_mode=history_match_mode),
             )
         cached = _CachedProfile(
             expires_at=now + 15 * 60,
@@ -658,11 +668,15 @@ class DeadlockService:
         account_id: int,
         *,
         ranked_only: bool = False,
+        match_mode: str | None = None,
     ) -> PlayerHistory | None:
+        if ranked_only:
+            match_mode = "ranked"
+        mode_values = {"ranked": 4, "unranked": 1}
         try:
             return await self.client.get_player_history(
                 account_id,
-                match_mode=4 if ranked_only else None,
+                match_mode=mode_values.get(match_mode),
             )
         except DeadlockAPIError:
             return None
@@ -670,9 +684,14 @@ class DeadlockService:
     async def _try_get_all_experience(
         self,
         account_id: int,
+        *,
+        match_mode: str | None = None,
     ) -> tuple[HeroExperience, ...]:
         try:
-            return await self.client.get_hero_experience((account_id,))
+            return await self.client.get_hero_experience(
+                (account_id,),
+                match_mode=match_mode,
+            )
         except DeadlockAPIError:
             return ()
 

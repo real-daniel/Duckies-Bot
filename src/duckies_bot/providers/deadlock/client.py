@@ -234,6 +234,21 @@ class DeadlockClient:
                     matches_played=matches,
                     wins=wins,
                     last_played=last_played,
+                    time_played_seconds=_optional_int(raw.get("time_played")) or 0,
+                    kills=_optional_int(raw.get("kills")) or 0,
+                    deaths=_optional_int(raw.get("deaths")) or 0,
+                    assists=_optional_int(raw.get("assists")) or 0,
+                    damage_per_minute=_optional_number(raw.get("damage_per_min")),
+                    objective_damage_per_minute=_optional_number(
+                        raw.get("obj_damage_per_min")
+                    ),
+                    net_worth_per_minute=_optional_number(raw.get("networth_per_min")),
+                    last_hits_per_minute=_optional_number(raw.get("last_hits_per_min")),
+                    denies_per_match=_optional_number(raw.get("denies_per_match")),
+                    accuracy=_optional_number(raw.get("accuracy")),
+                    crit_shot_rate=_optional_number(raw.get("crit_shot_rate")),
+                    mvp_rank_counts=_int_tuple(raw.get("mvp_rank_counts")),
+                    mvp_rated_matches=_optional_int(raw.get("mvp_rated_matches")) or 0,
                 )
             )
         return tuple(results)
@@ -405,3 +420,19 @@ def _optional_int(value: Any) -> int | None:
 
 def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _optional_number(value: Any) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return 0.0
+
+
+def _int_tuple(value: Any) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        item
+        for item in value
+        if isinstance(item, int) and not isinstance(item, bool)
+    )

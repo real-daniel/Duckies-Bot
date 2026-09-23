@@ -39,6 +39,7 @@ from ..features.deadlock.scout_graphic import render_scout_graphic
 from ..providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
 from ..storage import CompanionPairing, CompanionPairingRepository, SteamLinkRepository
 from ..views import (
+    DeadlockPlayerLookupView,
     DeadlockPlayerSearchView,
     DeadlockScoutView,
     DeadlockWatchView,
@@ -177,7 +178,16 @@ class DeadlockCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(embed=build_player_lookup_embed(result))
+        view = DeadlockPlayerLookupView(
+            result,
+            requester_id=interaction.user.id,
+            service=self.service,
+        )
+        view.message = await interaction.followup.send(
+            embed=build_player_lookup_embed(result),
+            view=view,
+            wait=True,
+        )
 
     @player.autocomplete("query")
     async def player_autocomplete(

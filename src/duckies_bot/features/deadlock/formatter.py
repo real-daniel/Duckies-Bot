@@ -429,9 +429,10 @@ def build_player_lookup_embed(player: PlayerLookup) -> discord.Embed:
     """Render a standalone Deadlock player summary."""
     profile = player.profile
     name = discord.utils.escape_markdown(profile.personaname)
+    mode_label = _player_mode_label(player.match_mode)
     embed = make_embed(
         name,
-        f"Deadlock player overview · Account `{profile.account_id}`",
+        f"{mode_label} match overview · Account `{profile.account_id}`",
         tone="info",
         url=profile.profile_url,
     )
@@ -457,7 +458,7 @@ def build_player_lookup_embed(player: PlayerLookup) -> discord.Embed:
         inline=False,
     )
     top_heroes = []
-    for record in player.top_heroes:
+    for record in player.top_heroes[:5]:
         experience = record.experience
         hero_name = record.hero.name if record.hero else f"Hero {experience.hero_id}"
         hero_rate = (
@@ -486,9 +487,103 @@ def build_player_lookup_embed(player: PlayerLookup) -> discord.Embed:
         embed,
         "Player lookup",
         source="Deadlock API + Steam Community",
-        context="Totals use recorded Deadlock API history",
+        context=f"{mode_label} totals from recorded Deadlock API history",
     )
     return embed
+
+
+def build_player_hero_embed(player: PlayerLookup, hero_index: int) -> discord.Embed:
+    """Render the detailed performance page for one of a player's heroes."""
+    if not 0 <= hero_index < len(player.top_heroes):
+        raise IndexError("hero_index is outside the player's hero list")
+    record = player.top_heroes[hero_index]
+    stats = record.experience
+    hero_name = record.hero.name if record.hero else f"Hero {stats.hero_id}"
+    mode_label = _player_mode_label(player.match_mode)
+    win_rate = f"{stats.win_rate:.1%}" if stats.win_rate is not None else "—"
+    embed = make_embed(
+        f"{player.profile.personaname} — {hero_name}",
+        (
+            f"{mode_label} hero performance · "
+            f"**{stats.matches_played:,}** matches · **{win_rate}** win rate"
+        ),
+        tone="info",
+        url=player.profile.profile_url,
+    )
+    average_kda = stats.average_kda
+    kda = (
+        f"{average_kda[0]:.1f} / {average_kda[1]:.1f} / {average_kda[2]:.1f}"
+        if average_kda is not None
+        else "—"
+    )
+    ratio = (stats.kills + stats.assists) / max(stats.deaths, 1)
+    embed.add_field(
+        name=field_name("Record"),
+        value=(
+            f"**{stats.wins:,}W–{stats.matches_played - stats.wins:,}L** · {win_rate}\n"
+            f"Playtime {_playtime(stats.time_played_seconds)}"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Combat"),
+        value=f"Avg K / D / A **{kda}**\nKDA ratio **{ratio:.2f}**",
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Damage"),
+        value=(
+            f"Player **{stats.damage_per_minute:,.0f}/min**\n"
+            f"Objectives **{stats.objective_damage_per_minute:,.0f}/min**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Economy & farm"),
+        value=(
+            f"Souls **{stats.net_worth_per_minute:,.0f}/min**\n"
+            f"Last hits **{stats.last_hits_per_minute:.1f}/min** · "
+            f"Denies **{stats.denies_per_match:.1f}/game**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Aim"),
+        value=(
+            f"Accuracy **{stats.accuracy:.1%}**\n"
+            f"Crit rate **{stats.crit_shot_rate:.1%}**"
+        ),
+        inline=True,
+    )
+    mvp_counts = (*stats.mvp_rank_counts, 0, 0, 0)
+    embed.add_field(
+        name=field_name("MVP finishes"),
+        value=(
+            f"1st **{mvp_counts[0]:,}** · 2nd **{mvp_counts[1]:,}** · "
+            f"3rd **{mvp_counts[2]:,}**\n"
+            f"Across {stats.mvp_rated_matches:,} rated matches"
+        ),
+        inline=True,
+    )
+    if record.hero and record.hero.icon_url:
+        embed.set_thumbnail(url=record.hero.icon_url)
+    finish_embed(
+        embed,
+        "Player lookup",
+        source="Deadlock API + Steam Community",
+        context=f"{mode_label} hero aggregates",
+    )
+    return embed
+
+
+def _player_mode_label(match_mode: str | None) -> str:
+    return {None: "All", "ranked": "Ranked", "unranked": "Standard"}[match_mode]
+
+
+def _playtime(seconds: int) -> str:
+    hours, remainder = divmod(max(seconds, 0), 3600)
+    minutes = remainder // 60
+    return f"{hours:,}h {minutes:02d}m"
 
 
 def build_player_search_embeds(
