@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 from duckies_bot.features.deadlock import DeadlockService
 from duckies_bot.features.deadlock.formatter import (
     build_live_match_embed,
+    build_player_hero_embed,
     build_player_lookup_embed,
     build_player_search_embeds,
     build_scout_overview_embeds,
@@ -40,6 +41,7 @@ from duckies_bot.providers.deadlock.client import DeadlockClient
 from duckies_bot.providers.deadlock.live_client import DeadlockLiveClient
 from duckies_bot.storage import CompanionPairing
 from duckies_bot.views import (
+    DeadlockPlayerLookupView,
     DeadlockPlayerSearchView,
     DeadlockScoutView,
     DeadlockWatchView,
@@ -255,6 +257,19 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
                             "matches_played": 50,
                             "wins": 30,
                             "last_played": 999,
+                            "time_played": 90000,
+                            "kills": 250,
+                            "deaths": 150,
+                            "assists": 400,
+                            "damage_per_min": 1234.5,
+                            "obj_damage_per_min": 321.5,
+                            "networth_per_min": 1100.0,
+                            "last_hits_per_min": 8.4,
+                            "denies_per_match": 2.2,
+                            "accuracy": 0.42,
+                            "crit_shot_rate": 0.15,
+                            "mvp_rank_counts": [3, 2, 1],
+                            "mvp_rated_matches": 20,
                         }
                     ]
                 ),
@@ -275,6 +290,9 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rank, PlayerRank(8, 5))
         self.assertEqual(history.outcomes, ("W", "L"))
         self.assertEqual(experience[0].win_rate, 0.6)
+        self.assertEqual(experience[0].average_kda, (5.0, 3.0, 8.0))
+        self.assertEqual(experience[0].damage_per_minute, 1234.5)
+        self.assertEqual(experience[0].mvp_rank_counts, (3, 2, 1))
         self.assertEqual(assets, (RankAsset(8, "Oracle"),))
         self.assertEqual(
             session.requests[2][1],
@@ -834,6 +852,48 @@ class DeadlockFormatterTests(unittest.TestCase):
         self.assertIn("Infernus", heroes)
         self.assertIn("60% WR", heroes)
 
+    def test_player_hero_embed_shows_detailed_performance(self) -> None:
+        profile = SteamProfile(1001, "Ducky", "https://example.test", None, "CA", 14)
+        experience = HeroExperience(
+            1001,
+            1,
+            20,
+            12,
+            999,
+            time_played_seconds=36_000,
+            kills=100,
+            deaths=60,
+            assists=140,
+            damage_per_minute=1_250,
+            objective_damage_per_minute=300,
+            net_worth_per_minute=1_100,
+            last_hits_per_minute=8.5,
+            denies_per_match=2.1,
+            accuracy=0.45,
+            crit_shot_rate=0.12,
+            mvp_rank_counts=(3, 2, 1),
+            mvp_rated_matches=18,
+        )
+        player = PlayerLookup(
+            profile,
+            PlayerRank(8, 5),
+            "Oracle",
+            ("W", "L"),
+            20,
+            12,
+            (HeroRecord(experience, HeroSummary(1, "Infernus", None)),),
+            "ranked",
+        )
+
+        embed = build_player_hero_embed(player, 0)
+
+        self.assertIn("Infernus", embed.title)
+        self.assertIn("Ranked hero performance", embed.description)
+        combat = next(field.value for field in embed.fields if field.name == "Combat")
+        self.assertIn("5.0 / 3.0 / 7.0", combat)
+        damage = next(field.value for field in embed.fields if field.name == "Damage")
+        self.assertIn("1,250/min", damage)
+
     def test_player_search_results_show_numbered_profiles_and_avatars(self) -> None:
         profiles = (
             SteamProfile(
@@ -1119,6 +1179,19 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
             [item.hero.name if item.hero else None for item in result.top_heroes],
             [None, "Infernus"],
         )
+
+    async def test_filters_player_lookup_to_ranked_or_standard(self) -> None:
+        api = FakeScoutAPI()
+        service = DeadlockService(api)  # type: ignore[arg-type]
+        profile = SteamProfile(1001, "Ducky", "https://example.test", None, None, 14)
+
+        ranked = await service.player_lookup(1001, profile=profile, match_mode="ranked")
+        standard = await service.player_lookup(1001, profile=profile, match_mode="unranked")
+
+        self.assertEqual(ranked.match_mode, "ranked")
+        self.assertEqual(standard.match_mode, "unranked")
+        self.assertEqual(api.experience_match_modes, ["ranked", "unranked"])
+        self.assertEqual(api.history_match_modes, [4, 1])
 
     async def test_live_stream_refreshes_unavailable_broadcast_url(self) -> None:
         snapshot = LiveMatchSnapshot(123, 0, ())
@@ -2008,4 +2081,75 @@ class DeadlockPlayerSearchViewTests(unittest.IsolatedAsyncioTestCase):
         interaction.edit_original_response.assert_awaited_once()
         embed = interaction.edit_original_response.await_args.kwargs["embed"]
         self.assertEqual(embed.title, "Ducky")
-        self.assertIsNone(interaction.edit_original_response.await_args.kwargs["view"])
+        self.assertIsInstance(
+            interaction.edit_original_response.await_args.kwargs["view"],
+            DeadlockPlayerLookupView,
+        )
+
+
+class DeadlockPlayerLookupViewTests(unittest.IsolatedAsyncioTestCase):
+    def _player(self, *, match_mode: str | None = None) -> PlayerLookup:
+        profile = SteamProfile(1001, "Ducky", "https://example.test", None, "CA", 14)
+        experience = HeroExperience(
+            1001,
+            1,
+            20,
+            12,
+            999,
+            kills=100,
+            deaths=60,
+            assists=140,
+        )
+        return PlayerLookup(
+            profile,
+            PlayerRank(8, 5),
+            "Oracle",
+            ("W", "L"),
+            20,
+            12,
+            (HeroRecord(experience, HeroSummary(1, "Infernus", None)),),
+            match_mode,
+        )
+
+    async def test_ranked_button_refetches_and_updates_the_overview(self) -> None:
+        ranked = self._player(match_mode="ranked")
+        service = SimpleNamespace(player_lookup=AsyncMock(return_value=ranked))
+        view = DeadlockPlayerLookupView(self._player(), 42, service)
+        button = next(child for child in view.children if child.label == "Ranked")
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+            edit_original_response=AsyncMock(),
+        )
+
+        await button.callback(interaction)  # type: ignore[attr-defined]
+
+        service.player_lookup.assert_awaited_once_with(
+            1001,
+            profile=ranked.profile,
+            match_mode="ranked",
+        )
+        embed = interaction.edit_original_response.await_args.kwargs["embed"]
+        self.assertIn("Ranked match overview", embed.description)
+
+    async def test_hero_select_opens_detailed_stats(self) -> None:
+        view = DeadlockPlayerLookupView(
+            self._player(),
+            42,
+            SimpleNamespace(player_lookup=AsyncMock()),
+        )
+        select = next(
+            child
+            for child in view.children
+            if child.custom_id == "deadlock_player_lookup:hero"
+        )
+        select._values = ["0"]  # type: ignore[attr-defined]
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(edit_message=AsyncMock()),
+        )
+
+        await select.callback(interaction)  # type: ignore[attr-defined]
+
+        embed = interaction.response.edit_message.await_args.kwargs["embed"]
+        self.assertIn("Infernus", embed.title)
+        self.assertTrue(any(field.name == "Combat" for field in embed.fields))

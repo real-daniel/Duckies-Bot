@@ -171,12 +171,35 @@ class HeroExperience:
     matches_played: int
     wins: int
     last_played: int
+    time_played_seconds: int = 0
+    kills: int = 0
+    deaths: int = 0
+    assists: int = 0
+    damage_per_minute: float = 0.0
+    objective_damage_per_minute: float = 0.0
+    net_worth_per_minute: float = 0.0
+    last_hits_per_minute: float = 0.0
+    denies_per_match: float = 0.0
+    accuracy: float = 0.0
+    crit_shot_rate: float = 0.0
+    mvp_rank_counts: tuple[int, ...] = ()
+    mvp_rated_matches: int = 0
 
     @property
     def win_rate(self) -> float | None:
         if self.matches_played <= 0:
             return None
         return self.wins / self.matches_played
+
+    @property
+    def average_kda(self) -> tuple[float, float, float] | None:
+        if self.matches_played <= 0:
+            return None
+        return (
+            self.kills / self.matches_played,
+            self.deaths / self.matches_played,
+            self.assists / self.matches_played,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +223,7 @@ class PlayerLookup:
     total_matches: int
     total_wins: int
     top_heroes: tuple[HeroRecord, ...]
+    match_mode: str | None = None
 
     @property
     def win_rate(self) -> float | None:
