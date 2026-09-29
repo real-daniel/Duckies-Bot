@@ -10,6 +10,7 @@ import discord
 
 from ..features.deadlock.formatter import build_live_match_embed, build_watch_tab_embed
 from ..features.deadlock.models import LiveMatchSnapshot, LivePlayer
+from .access import can_control_response
 
 
 WATCH_SCOREBOARD_FILENAME = "deadlock-scoreboard.png"
@@ -66,10 +67,11 @@ class DeadlockWatchView(discord.ui.View):
         self._sync_controls()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.requester_id:
+        if can_control_response(interaction, self.requester_id):
             return True
         await interaction.response.send_message(
-            "Only the person who started this match watch can control its views.",
+            "Only the person who started this match watch or a server moderator can "
+            "control its views.",
             ephemeral=True,
         )
         return False

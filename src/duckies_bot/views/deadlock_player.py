@@ -12,6 +12,7 @@ from ..features.deadlock.formatter import (
 )
 from ..features.deadlock.models import PlayerLookup, SteamProfile
 from ..providers.deadlock import DeadlockAPIError
+from .access import can_control_response
 
 if TYPE_CHECKING:
     from ..features.deadlock.service import DeadlockService
@@ -87,10 +88,10 @@ class DeadlockPlayerSearchView(discord.ui.View):
         self.add_item(_PlayerResultSelect(self))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.requester_id:
+        if can_control_response(interaction, self.requester_id):
             return True
         await interaction.response.send_message(
-            "Only the person who searched can choose a player.",
+            "Only the person who searched or a server moderator can choose a player.",
             ephemeral=True,
         )
         return False
@@ -285,10 +286,11 @@ class DeadlockPlayerLookupView(discord.ui.View):
                 )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.requester_id:
+        if can_control_response(interaction, self.requester_id):
             return True
         await interaction.response.send_message(
-            "Only the person who ran this lookup can change its filters.",
+            "Only the person who ran this lookup or a server moderator can change its "
+            "filters.",
             ephemeral=True,
         )
         return False

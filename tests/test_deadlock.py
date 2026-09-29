@@ -46,6 +46,7 @@ from duckies_bot.views import (
     DeadlockScoutView,
     DeadlockWatchView,
 )
+from duckies_bot.views.access import can_control_response
 from duckies_bot.cogs.deadlock import (
     DeadlockCog,
     _bot_authenticated_message,
@@ -1829,6 +1830,43 @@ class DeadlockWatchStopTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         self.assertEqual(selected[0], 200)
         self.assertIsNone(cog._most_recent_live_watch(3))
+
+
+class ResponseControlAccessTests(unittest.TestCase):
+    def interaction(
+        self,
+        user_id: int,
+        *,
+        in_guild: bool,
+        manage_messages: bool,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            user=SimpleNamespace(
+                id=user_id,
+                guild_permissions=SimpleNamespace(manage_messages=manage_messages),
+            ),
+            guild=SimpleNamespace() if in_guild else None,
+        )
+
+    def test_requester_can_control_response_without_moderator_permissions(self) -> None:
+        interaction = self.interaction(42, in_guild=True, manage_messages=False)
+
+        self.assertTrue(can_control_response(interaction, requester_id=42))
+
+    def test_server_moderator_can_control_another_users_response(self) -> None:
+        interaction = self.interaction(99, in_guild=True, manage_messages=True)
+
+        self.assertTrue(can_control_response(interaction, requester_id=42))
+
+    def test_regular_server_member_cannot_control_another_users_response(self) -> None:
+        interaction = self.interaction(99, in_guild=True, manage_messages=False)
+
+        self.assertFalse(can_control_response(interaction, requester_id=42))
+
+    def test_dm_user_cannot_gain_moderator_access(self) -> None:
+        interaction = self.interaction(99, in_guild=False, manage_messages=True)
+
+        self.assertFalse(can_control_response(interaction, requester_id=42))
 
 
 class DeadlockWatchViewTests(unittest.IsolatedAsyncioTestCase):
