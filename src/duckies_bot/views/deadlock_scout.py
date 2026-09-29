@@ -8,6 +8,7 @@ from io import BytesIO
 import discord
 
 from ..features.deadlock.models import MatchScout
+from .access import can_control_response
 
 
 SCOUT_GRAPHIC_FILENAME = "deadlock-scout.png"
@@ -51,10 +52,11 @@ class DeadlockScoutView(discord.ui.View):
         self._sync_select()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.requester_id:
+        if can_control_response(interaction, self.requester_id):
             return True
         await interaction.response.send_message(
-            "Only the person who requested this scouting report can control it.",
+            "Only the person who requested this scouting report or a server moderator "
+            "can control it.",
             ephemeral=True,
         )
         return False
