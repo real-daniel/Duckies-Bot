@@ -38,6 +38,10 @@ class HeroSummary:
     hero_id: int
     name: str
     icon_url: str | None
+    development_state: str | None = None
+    gender: str | None = None
+    search_name: str | None = None
+    vote_sticker_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +53,7 @@ class ItemSummary:
     tier: int | None
     cost: int | None
     shopable: bool
+    is_corruptible: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +120,8 @@ class LiveKillEvent:
     attacker_account_id: int | None
     victim_account_id: int | None
     assister_account_ids: tuple[int, ...] = ()
+    killfeed_gold: int | None = None
+    killer_ability_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +191,10 @@ class HeroExperience:
     crit_shot_rate: float = 0.0
     mvp_rank_counts: tuple[int, ...] = ()
     mvp_rated_matches: int = 0
+    permanent_buffs: int = 0
+    permanent_buff_matches: int = 0
+    permanent_buffs_per_minute: float | None = None
+    average_first_permanent_buff_time_seconds: float | None = None
 
     @property
     def win_rate(self) -> float | None:
@@ -200,6 +211,13 @@ class HeroExperience:
             self.deaths / self.matches_played,
             self.assists / self.matches_played,
         )
+
+    @property
+    def permanent_buffs_per_match(self) -> float | None:
+        """Average pickups over matches that carry post-6712 buff data."""
+        if self.permanent_buff_matches <= 0:
+            return None
+        return self.permanent_buffs / self.permanent_buff_matches
 
 
 @dataclass(frozen=True, slots=True)

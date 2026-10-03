@@ -326,6 +326,8 @@ def _parse_live_kill_event(
         attacker_account_id=scorer or attacker,
         victim_account_id=account(victim_entity),
         assister_account_ids=assisters,
+        killfeed_gold=_optional_int(raw.get("killfeed_gold")),
+        killer_ability_id=_optional_int(raw.get("killer_ability_id")),
     )
 
 

@@ -565,6 +565,32 @@ def build_player_hero_embed(player: PlayerLookup, hero_index: int) -> discord.Em
         ),
         inline=True,
     )
+    if stats.permanent_buff_matches > 0:
+        buffs_per_match = stats.permanent_buffs_per_match
+        buffs_per_minute = stats.permanent_buffs_per_minute
+        first_pickup = stats.average_first_permanent_buff_time_seconds
+        pickup_timing = (
+            f" · first at **{_duration_from_float(first_pickup)}**"
+            if first_pickup is not None
+            else ""
+        )
+        embed.add_field(
+            name=field_name("Permanent buffs"),
+            value=(
+                f"**{stats.permanent_buffs:,}** pickups · "
+                f"**{buffs_per_match:.1f}/game**"
+                if buffs_per_match is not None
+                else f"**{stats.permanent_buffs:,}** pickups"
+            )
+            + (
+                f" · **{buffs_per_minute:.2f}/min**"
+                if buffs_per_minute is not None
+                else ""
+            )
+            + pickup_timing
+            + f"\nAcross {stats.permanent_buff_matches:,} tracked matches",
+            inline=False,
+        )
     if record.hero and record.hero.icon_url:
         embed.set_thumbnail(url=record.hero.icon_url)
     finish_embed(

@@ -249,6 +249,16 @@ class DeadlockClient:
                     crit_shot_rate=_optional_number(raw.get("crit_shot_rate")),
                     mvp_rank_counts=_int_tuple(raw.get("mvp_rank_counts")),
                     mvp_rated_matches=_optional_int(raw.get("mvp_rated_matches")) or 0,
+                    permanent_buffs=_optional_int(raw.get("permanent_buffs")) or 0,
+                    permanent_buff_matches=(
+                        _optional_int(raw.get("permanent_buff_matches")) or 0
+                    ),
+                    permanent_buffs_per_minute=_nullable_number(
+                        raw.get("permanent_buffs_per_min")
+                    ),
+                    average_first_permanent_buff_time_seconds=_nullable_number(
+                        raw.get("avg_first_permanent_buff_time_s")
+                    ),
                 )
             )
         return tuple(results)
@@ -316,11 +326,23 @@ def _parse_hero(document: Mapping[str, Any]) -> HeroSummary:
         raise InvalidDeadlockResponseError()
     images = document.get("images")
     icon_url = None
+    vote_sticker_url = None
     if isinstance(images, Mapping):
         icon_url = _optional_str(images.get("icon_image_small_webp")) or _optional_str(
             images.get("icon_image_small")
         )
-    return HeroSummary(returned_id, name, icon_url)
+        vote_sticker_url = _optional_str(
+            images.get("vote_sticker_webp")
+        ) or _optional_str(images.get("vote_sticker"))
+    return HeroSummary(
+        hero_id=returned_id,
+        name=name,
+        icon_url=icon_url,
+        development_state=_optional_str(document.get("development_state")),
+        gender=_optional_str(document.get("gender")),
+        search_name=_optional_str(document.get("search_name")),
+        vote_sticker_url=vote_sticker_url,
+    )
 
 
 def _parse_item(document: Mapping[str, Any]) -> ItemSummary | None:
@@ -342,6 +364,7 @@ def _parse_item(document: Mapping[str, Any]) -> ItemSummary | None:
         tier=_optional_int(document.get("item_tier")),
         cost=_optional_int(document.get("cost")),
         shopable=document.get("shopable") is True,
+        is_corruptible=isinstance(document.get("corrupted_info"), Mapping),
     )
 
 
@@ -426,6 +449,12 @@ def _optional_number(value: Any) -> float:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
     return 0.0
+
+
+def _nullable_number(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
 
 
 def _int_tuple(value: Any) -> tuple[int, ...]:
