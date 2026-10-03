@@ -283,6 +283,8 @@ class DeadlockWatchView(discord.ui.View):
             ]
             if assister_names:
                 message = f"{message[:-1]} (assisted by {', '.join(assister_names)})."
+            if kill.killfeed_gold is not None and kill.killfeed_gold > 0:
+                message = f"{message[:-1]} · +{kill.killfeed_gold:,} souls."
             self.timeline.append(message)
         for player in current.players:
             old = old_players.get(player.account_id)

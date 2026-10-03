@@ -201,7 +201,13 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "id": 1,
                         "name": "Infernus",
-                        "images": {"icon_image_small_webp": "https://example.test/hero.webp"},
+                        "development_state": "release",
+                        "gender": "male",
+                        "search_name": "Infernus",
+                        "images": {
+                            "icon_image_small_webp": "https://example.test/hero.webp",
+                            "vote_sticker_webp": "https://example.test/vote.webp",
+                        },
                     }
                 ),
                 FakeResponse(
@@ -221,6 +227,10 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
                             "item_tier": 1,
                             "cost": 800,
                             "shop_image_webp": "https://example.test/item.webp",
+                            "corrupted_info": {
+                                "property_upgrades": [],
+                                "excluded_penalties": [],
+                            },
                         },
                         {"id": 2, "name": "Internal Ability", "shopable": False},
                     ]
@@ -232,11 +242,16 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
         heroes = await client.get_heroes()
         items = await client.get_items()
         self.assertEqual(hero.name, "Infernus")
+        self.assertEqual(hero.development_state, "release")
+        self.assertEqual(hero.gender, "male")
+        self.assertEqual(hero.search_name, "Infernus")
+        self.assertEqual(hero.vote_sticker_url, "https://example.test/vote.webp")
         self.assertEqual([item.name for item in heroes], ["Infernus", "Seven"])
         self.assertEqual(items[0].item_id, 1548066885)
         self.assertEqual(items[0].slot_type, "weapon")
         self.assertEqual(items[0].icon_url, "https://example.test/item.webp")
         self.assertTrue(items[0].shopable)
+        self.assertTrue(items[0].is_corruptible)
 
     async def test_parses_rank_history_experience_and_rank_assets(self) -> None:
         session = FakeSession(
@@ -271,6 +286,10 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
                             "crit_shot_rate": 0.15,
                             "mvp_rank_counts": [3, 2, 1],
                             "mvp_rated_matches": 20,
+                            "permanent_buffs": 75,
+                            "permanent_buff_matches": 25,
+                            "permanent_buffs_per_min": 0.12,
+                            "avg_first_permanent_buff_time_s": 455.5,
                         }
                     ]
                 ),
@@ -294,6 +313,12 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(experience[0].average_kda, (5.0, 3.0, 8.0))
         self.assertEqual(experience[0].damage_per_minute, 1234.5)
         self.assertEqual(experience[0].mvp_rank_counts, (3, 2, 1))
+        self.assertEqual(experience[0].permanent_buffs_per_match, 3.0)
+        self.assertEqual(experience[0].permanent_buffs_per_minute, 0.12)
+        self.assertEqual(
+            experience[0].average_first_permanent_buff_time_seconds,
+            455.5,
+        )
         self.assertEqual(assets, (RankAsset(8, "Oracle"),))
         self.assertEqual(
             session.requests[2][1],
@@ -366,7 +391,8 @@ class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
             'event: hero_killed\n'
             'data: {"tick":120,"game_time":75.5,"event_type":"hero_killed",'
             '"entindex_victim":107,"entindex_attacker":101,'
-            '"entindex_scorer":101,"entindex_assisters":[102]}\n\n'
+            '"entindex_scorer":101,"entindex_assisters":[102],'
+            '"killfeed_gold":525,"killer_ability_id":12345}\n\n'
             'event: end\ndata: {}\n\n'
         )
         client = DeadlockLiveClient(
@@ -387,6 +413,8 @@ class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kill.attacker_account_id, 3001)
         self.assertEqual(kill.victim_account_id, 3007)
         self.assertEqual(kill.assister_account_ids, (3002,))
+        self.assertEqual(kill.killfeed_gold, 525)
+        self.assertEqual(kill.killer_ability_id, 12345)
 
     async def test_parses_detailed_controller_statistics(self) -> None:
         body = (
@@ -865,6 +893,10 @@ class DeadlockFormatterTests(unittest.TestCase):
             kills=100,
             deaths=60,
             assists=140,
+            permanent_buffs=30,
+            permanent_buff_matches=10,
+            permanent_buffs_per_minute=0.15,
+            average_first_permanent_buff_time_seconds=455.5,
             damage_per_minute=1_250,
             objective_damage_per_minute=300,
             net_worth_per_minute=1_100,
@@ -894,6 +926,11 @@ class DeadlockFormatterTests(unittest.TestCase):
         self.assertIn("5.0 / 3.0 / 7.0", combat)
         damage = next(field.value for field in embed.fields if field.name == "Damage")
         self.assertIn("1,250/min", damage)
+        permanent_buffs = next(
+            field.value for field in embed.fields if field.name == "Permanent buffs"
+        )
+        self.assertIn("3.0/game", permanent_buffs)
+        self.assertIn("7:35", permanent_buffs)
 
     def test_player_search_results_show_numbered_profiles_and_avatars(self) -> None:
         profiles = (
@@ -1951,7 +1988,9 @@ class DeadlockWatchViewTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             items=(ItemSummary(101, "Titanic Magazine", None, "weapon", 3, 3000, True),),
-            kill_events=(LiveKillEvent(120, 120, 1001, 1002),),
+            kill_events=(
+                LiveKillEvent(120, 120, 1001, 1002, killfeed_gold=525),
+            ),
         )
         updated = LiveMatchSnapshot(
             updated.match_id,
@@ -1970,6 +2009,7 @@ class DeadlockWatchViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view.tab, "combat")
         self.assertIn("Combat", view.render().title)
         self.assertTrue(any("Ducky** killed **Goose" in event for event in view.timeline))
+        self.assertTrue(any("+525 souls" in event for event in view.timeline))
         self.assertTrue(
             any(
                 "replaced **Basic Magazine** with **Titanic Magazine**" in event
