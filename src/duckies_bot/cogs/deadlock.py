@@ -39,7 +39,10 @@ from ..features.deadlock.scout_graphic import render_scout_graphic
 from ..providers.deadlock import (
     DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
     DeadlockAPIError,
+    LiveBroadcastEndedBeforeDataError,
+    LiveBroadcastStreamError,
     LiveDemoUnavailableError,
+    LivePlayerDataTimeoutError,
 )
 from ..storage import CompanionPairing, CompanionPairingRepository, SteamLinkRepository
 from ..views import (
@@ -448,8 +451,7 @@ class DeadlockCog(commands.Cog):
                 )
                 return
             stream = self.service.stream_live_match(resolved_match_id)
-            async with asyncio.timeout(DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS):
-                first_snapshot = await anext(stream)
+            first_snapshot = await anext(stream)
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             return
@@ -779,13 +781,26 @@ class DeadlockCog(commands.Cog):
                             match_id,
                             len(connected_accounts),
                         )
-            except (LiveDemoUnavailableError, StopAsyncIteration, TimeoutError) as exc:
+            except (
+                LiveBroadcastEndedBeforeDataError,
+                LiveBroadcastStreamError,
+                LiveDemoUnavailableError,
+                LivePlayerDataTimeoutError,
+                StopAsyncIteration,
+                TimeoutError,
+            ) as exc:
                 await stream.aclose()
                 await self.service.invalidate_broadcast_url(match_id)
                 if isinstance(exc, LiveDemoUnavailableError):
                     reason = "Valve reported demo unavailable"
                 elif isinstance(exc, StopAsyncIteration):
                     reason = "the broadcast ended before returning a complete roster"
+                elif isinstance(exc, LiveBroadcastEndedBeforeDataError):
+                    reason = "the broadcast ended before returning player data"
+                elif isinstance(exc, LiveBroadcastStreamError):
+                    reason = "the broadcast stream failed before returning player data"
+                elif isinstance(exc, LivePlayerDataTimeoutError):
+                    reason = "the broadcast produced no player data before timing out"
                 else:
                     reason = (
                         "a complete standard or Street Brawl roster did not arrive "

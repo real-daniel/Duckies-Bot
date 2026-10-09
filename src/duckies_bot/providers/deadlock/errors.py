@@ -17,6 +17,31 @@ class LiveDemoUnavailableError(DeadlockAPIError):
         )
 
 
+class LivePlayerDataTimeoutError(DeadlockAPIError):
+    """Raised when a parser stream opens but produces no player snapshot."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The live broadcast did not produce player data before timing out."
+        )
+
+
+class LiveBroadcastEndedBeforeDataError(DeadlockAPIError):
+    """Raised when a parser stream ends before producing a player snapshot."""
+
+    def __init__(self) -> None:
+        super().__init__("The live broadcast ended without returning player data.")
+
+
+class LiveBroadcastStreamError(DeadlockAPIError):
+    """Raised when the parser reports a Valve relay or demo parsing failure."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The live broadcast stream failed before returning player data."
+        )
+
+
 class InvalidDeadlockResponseError(DeadlockAPIError):
     def __init__(self) -> None:
         super().__init__("The Deadlock API returned an unexpected response.")

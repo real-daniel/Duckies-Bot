@@ -1,7 +1,13 @@
 """Deadlock API provider."""
 
 from .client import DeadlockClient
-from .errors import DeadlockAPIError, LiveDemoUnavailableError
+from .errors import (
+    DeadlockAPIError,
+    LiveBroadcastEndedBeforeDataError,
+    LiveBroadcastStreamError,
+    LiveDemoUnavailableError,
+    LivePlayerDataTimeoutError,
+)
 from .live_client import DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS, DeadlockLiveClient
 
 __all__ = [
@@ -9,5 +15,8 @@ __all__ = [
     "DeadlockClient",
     "DeadlockLiveClient",
     "DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS",
+    "LiveBroadcastEndedBeforeDataError",
+    "LiveBroadcastStreamError",
     "LiveDemoUnavailableError",
+    "LivePlayerDataTimeoutError",
 ]

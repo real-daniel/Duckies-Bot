@@ -63,7 +63,7 @@ index d639439..0c9dd84 100644
          let demo_event = DemoEvent {
              tick: ctx.tick(),
              game_time: self.game_time,
-@@ -220,4 +224,90 @@ impl SendingVisitor {
+@@ -220,4 +224,91 @@ impl SendingVisitor {
          self.sender.send(demo_event.try_into()?)?;
          Ok(())
      }
@@ -132,6 +132,7 @@ index d639439..0c9dd84 100644
 +}
 +
 +fn statue_buff(modifier_subclass: u32) -> Option<(&'static str, u8)> {
++    // These stable modifier hashes identify the three permanent-buff tiers.
 +    Some(match modifier_subclass {
 +        2_201_601_853 => ("spirit", 1),
 +        2_345_479_643 => ("fire_rate", 1),

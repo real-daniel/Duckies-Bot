@@ -42,7 +42,9 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   match-ended states instead of silently freezing. A 45-second event inactivity
   watchdog also recovers parser connections that remain open after Valve stops
   sending frames. Initial watch and scout connections wait up to 135 seconds for
-  player data.
+  player data. If a fresh stream ends, reports a relay error, or times out before
+  producing player data, the bot discards the cached broadcast URL and retries
+  with a newly fetched URL.
 - Companion-triggered matches wait for a complete lobby (6v6 standard or 4v4
   Street Brawl), post a ranked scouting graphic, wait three seconds, and then
   open the live watch using the same complete broadcast snapshot.
@@ -51,8 +53,8 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   stream times out, or it ends before returning the roster, the bot keeps the
   connecting notice, clears the cached broadcast URL, and retries for up to five
   minutes.
-- Valve broadcast URLs are fetched once per match and cached in SQLite for six
-  hours, including across bot restarts. Live and scouting lookups reuse the URL
+- Valve broadcast URLs are fetched once per match and cached in SQLite for 15
+  minutes, including across bot restarts. Live and scouting lookups reuse the URL
   instead of repeatedly calling Deadlock API. Chat startup currently makes one
   match-URL request because the upstream parser's direct-URL chat flag is broken.
 - Hero metadata is fetched in one bulk request and cached for 24 hours instead of

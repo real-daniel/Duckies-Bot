@@ -39,7 +39,10 @@ from duckies_bot.features.deadlock.models import (
 from duckies_bot.providers.deadlock import (
     DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
     DeadlockAPIError,
+    LiveBroadcastEndedBeforeDataError,
+    LiveBroadcastStreamError,
     LiveDemoUnavailableError,
+    LivePlayerDataTimeoutError,
 )
 from duckies_bot.providers.deadlock.client import DeadlockClient
 from duckies_bot.providers.deadlock.live_client import DeadlockLiveClient
@@ -371,6 +374,20 @@ class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(client.timeout_seconds, DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS)
         self.assertGreater(client.timeout_seconds, 120)
+
+    async def test_parser_error_event_is_reported_as_stream_failure(self) -> None:
+        response = FakeSSEResponse(
+            "event: error\ndata: relay packet fetch failed\n\n"
+        )
+        client = DeadlockLiveClient(
+            session=FakeSSESession(response)
+        )  # type: ignore[arg-type]
+
+        with self.assertRaises(LiveBroadcastStreamError):
+            await client.get_match_players(
+                123,
+                "https://relay.example.test/match/123",
+            )
 
     async def test_classifies_valve_demo_not_available_as_retryable(self) -> None:
         response = FakeSSEResponse(
@@ -1274,6 +1291,114 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
                 "https://relay.example.test/match/123/2",
             ],
         )
+
+    async def test_live_stream_refreshes_url_when_first_stream_ends_without_data(self) -> None:
+        snapshot = LiveMatchSnapshot(123, 0, ())
+
+        class RefreshingAPI(FakeScoutAPI):
+            async def get_live_broadcast_url(self, match_id: int) -> str:
+                self.broadcast_url_calls += 1
+                return f"https://relay.example.test/match/{match_id}/{self.broadcast_url_calls}"
+
+        class EndedLiveClient:
+            timeout_seconds = 1.0
+
+            def __init__(self) -> None:
+                self.urls: list[str] = []
+
+            async def stream_match_snapshots(self, _match_id: int, url: str):
+                self.urls.append(url)
+                if len(self.urls) == 1:
+                    return
+                yield snapshot
+
+        api = RefreshingAPI()
+        live_client = EndedLiveClient()
+        service = DeadlockService(api, live_client)  # type: ignore[arg-type]
+
+        received = [item async for item in service.stream_live_match(123)]
+
+        self.assertEqual(received, [snapshot])
+        self.assertEqual(api.broadcast_url_calls, 2)
+        self.assertEqual(len(live_client.urls), 2)
+        self.assertNotEqual(*live_client.urls)
+
+    async def test_live_stream_refreshes_url_when_first_stream_has_no_events(self) -> None:
+        snapshot = LiveMatchSnapshot(123, 0, ())
+
+        class RefreshingAPI(FakeScoutAPI):
+            async def get_live_broadcast_url(self, match_id: int) -> str:
+                self.broadcast_url_calls += 1
+                return f"https://relay.example.test/match/{match_id}/{self.broadcast_url_calls}"
+
+        class QuietLiveClient:
+            timeout_seconds = 0.001
+
+            def __init__(self) -> None:
+                self.urls: list[str] = []
+
+            async def stream_match_snapshots(self, _match_id: int, url: str):
+                self.urls.append(url)
+                if len(self.urls) == 1:
+                    await asyncio.Event().wait()
+                yield snapshot
+
+        api = RefreshingAPI()
+        live_client = QuietLiveClient()
+        service = DeadlockService(api, live_client)  # type: ignore[arg-type]
+
+        received = [item async for item in service.stream_live_match(123)]
+
+        self.assertEqual(received, [snapshot])
+        self.assertEqual(api.broadcast_url_calls, 2)
+        self.assertEqual(len(live_client.urls), 2)
+        self.assertNotEqual(*live_client.urls)
+
+    async def test_scout_refreshes_url_after_player_data_timeout(self) -> None:
+        snapshot = LiveMatchSnapshot(123, 0, ())
+
+        class RefreshingAPI(FakeScoutAPI):
+            async def get_live_broadcast_url(self, match_id: int) -> str:
+                self.broadcast_url_calls += 1
+                return f"https://relay.example.test/match/{match_id}/{self.broadcast_url_calls}"
+
+        class TimeoutLiveClient:
+            def __init__(self) -> None:
+                self.urls: list[str] = []
+
+            async def get_match_players(self, _match_id: int, url: str):
+                self.urls.append(url)
+                if len(self.urls) == 1:
+                    raise LivePlayerDataTimeoutError()
+                return snapshot
+
+        api = RefreshingAPI()
+        live_client = TimeoutLiveClient()
+        service = DeadlockService(api, live_client)  # type: ignore[arg-type]
+
+        with patch("duckies_bot.features.deadlock.service.asyncio.sleep", new=AsyncMock()):
+            received = await service._live_match_with_retries(123)
+
+        self.assertEqual(received, snapshot)
+        self.assertEqual(api.broadcast_url_calls, 2)
+        self.assertEqual(len(live_client.urls), 2)
+        self.assertNotEqual(*live_client.urls)
+
+    async def test_live_stream_reports_typed_failure_after_refresh_is_exhausted(self) -> None:
+        class EndedLiveClient:
+            timeout_seconds = 1.0
+
+            async def stream_match_snapshots(self, _match_id: int, _url: str):
+                return
+                yield  # pragma: no cover - keeps this an async generator
+
+        api = FakeScoutAPI()
+        service = DeadlockService(api, EndedLiveClient())  # type: ignore[arg-type]
+
+        with self.assertRaises(LiveBroadcastEndedBeforeDataError):
+            _ = [item async for item in service.stream_live_match(123)]
+
+        self.assertEqual(api.broadcast_url_calls, 2)
 
     async def test_companion_waits_for_delayed_demo_then_opens_watch(self) -> None:
         snapshot = _companion_snapshot()
