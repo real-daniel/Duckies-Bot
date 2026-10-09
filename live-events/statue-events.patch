@@ -1,10 +1,10 @@
 diff --git a/live-events/src/demo_parser/types.rs b/live-events/src/demo_parser/types.rs
-index 2c68a64..99cfa16 100644
+index 6a99882c..0181160e 100644
 --- a/live-events/src/demo_parser/types.rs
 +++ b/live-events/src/demo_parser/types.rs
-@@ -48,6 +48,14 @@ pub(super) enum DemoEventPayload {
-     BannedHeroes {
-         banned_hero_ids: Vec<u32>,
+@@ -98,6 +98,14 @@ pub(super) enum DemoEventPayload {
+         /// Packed `m_nUpgradeInfo`; bit 23 (`0x800000`) marks the item as corrupted.
+         upgrade_info: u32,
      },
 +    StatueBuff {
 +        entry_id: i32,
@@ -17,55 +17,49 @@ index 2c68a64..99cfa16 100644
      TickEnd,
  }
  
-@@ -60,6 +68,7 @@ impl Display for DemoEventPayload {
-             Self::ChatMessage { .. } => write!(f, "chat_message"),
-             Self::HeroKilled { .. } => write!(f, "hero_killed"),
-             Self::BannedHeroes { .. } => write!(f, "banned_heroes"),
+@@ -119,6 +127,7 @@ impl Display for DemoEventPayload {
+             Self::CorruptedItemShopSpawn { .. } => write!(f, "corrupted_item_shop_spawn"),
+             Self::CorruptedItemShopRestock { .. } => write!(f, "corrupted_item_shop_restock"),
+             Self::CorruptedItem { .. } => write!(f, "corrupted_item"),
 +            Self::StatueBuff { .. } => write!(f, "statue_buff"),
              Self::TickEnd => write!(f, "tick_end"),
          }
      }
 diff --git a/live-events/src/demo_parser/visitor.rs b/live-events/src/demo_parser/visitor.rs
-index d639439..0c9dd84 100644
+index 51ceb5a8..5ac5c2e0 100644
 --- a/live-events/src/demo_parser/visitor.rs
 +++ b/live-events/src/demo_parser/visitor.rs
-@@ -3,7 +3,7 @@ use std::collections::HashSet;
+@@ -5,7 +5,7 @@ use std::collections::HashSet;
  
  use axum::response::sse::Event;
  use haste::demostream::CmdHeader;
 -use haste::entities::{DeltaHeader, Entity};
 +use haste::entities::{DeltaHeader, Entity, ehandle_to_index};
- use haste::parser::{Context, Visitor};
+ use haste::parser::{AsyncVisitor, Context};
  use haste::stringtables::StringTableItem;
  use prost::Message;
-@@ -26,6 +26,7 @@ pub(crate) struct SendingVisitor {
-     sender: UnboundedSender<Event>,
-     subscribed_chat_messages: bool,
-     subscribed_entities: Option<HashSet<EntityType>>,
+@@ -53,6 +53,7 @@ pub(crate) struct SendingVisitor {
+     broker: BrokerStock,
+     /// Item entities already reported as corrupted.
+     corrupted_items: HashSet<i32>,
 +    seen_statue_modifiers: HashSet<(i32, Option<u32>, u32)>,
-     game_time: f32,
-     tick_interval: f32,
-     rules: GameRulesProxyEvent,
-@@ -41,6 +42,7 @@ impl SendingVisitor {
-             sender,
-             subscribed_chat_messages,
-             subscribed_entities: subscribed_entities.map(|iter| iter.into_iter().collect()),
+ }
+ 
+ impl SendingVisitor {
+@@ -72,6 +73,7 @@ impl SendingVisitor {
+             banned_heroes: None,
+             broker: BrokerStock::default(),
+             corrupted_items: HashSet::new(),
 +            seen_statue_modifiers: HashSet::new(),
-             game_time: 0.0,
-             tick_interval: 1.0 / 60.0,
-             rules: GameRulesProxyEvent::default(),
-@@ -212,6 +214,8 @@ impl SendingVisitor {
+         }
+     }
+ }
+@@ -401,8 +403,92 @@ impl SendingVisitor {
              self.game_time = total_time - self.rules.game_start_time.unwrap_or_default();
          }
  
 +        self.handle_statue_buffs(ctx)?;
-+
-         let demo_event = DemoEvent {
-             tick: ctx.tick(),
-             game_time: self.game_time,
-@@ -220,4 +224,91 @@ impl SendingVisitor {
-         self.sender.send(demo_event.try_into()?)?;
-         Ok(())
+         self.send(ctx, DemoEventPayload::TickEnd)
      }
 +
 +    fn handle_statue_buffs(&mut self, ctx: &Context) -> Result<(), DemoParseError> {
@@ -80,7 +74,7 @@ index d639439..0c9dd84 100644
 +            let Some(data) = item.get_user_data() else {
 +                continue;
 +            };
-+            let Ok(modifier) = ModifierTableEntry::decode(data.as_slice()) else {
++            let Ok(modifier) = ModifierTableEntry::decode(data) else {
 +                continue;
 +            };
 +            if modifier.entry_type.unwrap_or(1) != 1 {
@@ -100,11 +94,9 @@ index d639439..0c9dd84 100644
 +            if !self.seen_statue_modifiers.insert(identity) {
 +                continue;
 +            }
-+
-+            let event = DemoEvent {
-+                tick: ctx.tick(),
-+                game_time: self.game_time,
-+                event: DemoEventPayload::StatueBuff {
++            self.send(
++                ctx,
++                DemoEventPayload::StatueBuff {
 +                    entry_id: *entry_id,
 +                    parent: parent_index,
 +                    serial_number: modifier.serial_number,
@@ -112,8 +104,7 @@ index d639439..0c9dd84 100644
 +                    stat,
 +                    tier,
 +                },
-+            };
-+            self.sender.send(event.try_into()?)?;
++            )?;
 +        }
 +        Ok(())
 +    }
@@ -132,7 +123,6 @@ index d639439..0c9dd84 100644
 +}
 +
 +fn statue_buff(modifier_subclass: u32) -> Option<(&'static str, u8)> {
-+    // These stable modifier hashes identify the three permanent-buff tiers.
 +    Some(match modifier_subclass {
 +        2_201_601_853 => ("spirit", 1),
 +        2_345_479_643 => ("fire_rate", 1),
@@ -155,16 +145,17 @@ index d639439..0c9dd84 100644
 +        _ => return None,
 +    })
  }
+ 
+ fn music_queue_name(queue: CitadelMusicMsgType) -> &'static str {
 diff --git a/live-events/src/events.rs b/live-events/src/events.rs
-index f8d37b9..564d0d1 100644
+index 986fe54d..9c0b2067 100644
 --- a/live-events/src/events.rs
 +++ b/live-events/src/events.rs
-@@ -44,7 +44,7 @@ fn all_sse_events() -> Vec<String> {
+@@ -58,6 +58,7 @@ fn all_sse_events() -> Vec<String> {
+                 "corrupted_item_shop_spawn",
+                 "corrupted_item_shop_restock",
+                 "corrupted_item",
++                "statue_buff",
+                 "end",
+                 "error",
              ]
-         })
-         .chain(
--            ["tick_end", "hero_killed", "end", "error"]
-+            ["tick_end", "hero_killed", "statue_buff", "end", "error"]
-                 .into_iter()
-                 .map(ToString::to_string),
-         )
