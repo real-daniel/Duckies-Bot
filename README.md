@@ -41,7 +41,8 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   the cached broadcast URL; the embed displays reconnecting, unavailable, and
   match-ended states instead of silently freezing. A 45-second event inactivity
   watchdog also recovers parser connections that remain open after Valve stops
-  sending frames.
+  sending frames. Initial watch and scout connections wait up to 135 seconds for
+  player data.
 - Companion-triggered matches wait for a complete lobby (6v6 standard or 4v4
   Street Brawl), post a ranked scouting graphic, wait three seconds, and then
   open the live watch using the same complete broadcast snapshot.
