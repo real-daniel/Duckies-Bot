@@ -1397,6 +1397,46 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not ready yet", notice.edit.await_args.kwargs["content"])
         await stream.aclose()
 
+    async def test_companion_retries_broadcast_that_ends_without_player_data(self) -> None:
+        snapshot = _companion_snapshot()
+
+        class EndedDemoService:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.invalidated: list[int] = []
+
+            def stream_live_match(self, _match_id: int):
+                async def generate():
+                    self.calls += 1
+                    if self.calls == 1:
+                        return
+                    yield snapshot
+
+                return generate()
+
+            async def invalidate_broadcast_url(self, match_id: int) -> None:
+                self.invalidated.append(match_id)
+
+        service = EndedDemoService()
+        cog = object.__new__(DeadlockCog)
+        cog.service = service
+        notice = SimpleNamespace(edit=AsyncMock())
+        with (
+            patch(
+                "duckies_bot.cogs.deadlock._COMPANION_DEMO_RETRY_DELAYS",
+                (0.0,),
+            ),
+            patch("duckies_bot.cogs.deadlock.asyncio.sleep", new=AsyncMock()),
+        ):
+            stream, received = await cog._wait_for_companion_demo(123, notice)
+
+        self.assertEqual(received, snapshot)
+        self.assertEqual(service.calls, 2)
+        self.assertEqual(service.invalidated, [123])
+        notice.edit.assert_awaited_once()
+        self.assertIn("not ready yet", notice.edit.await_args.kwargs["content"])
+        await stream.aclose()
+
     async def test_companion_quiet_broadcast_stops_after_retry_budget(self) -> None:
         class QuietDemoService:
             def __init__(self) -> None:
