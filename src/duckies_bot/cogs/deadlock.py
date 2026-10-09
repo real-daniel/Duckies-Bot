@@ -94,7 +94,7 @@ class _PlayerSearchResults(ValueError):
         self.profiles = profiles
 
 
-_WATCH_REFRESH_SECONDS = 60.0
+_WATCH_REFRESH_SECONDS = 20.0
 _WATCH_RECONNECT_DELAYS = (3.0, 8.0, 15.0, 30.0)
 _WATCH_IDLE_SECONDS = 45.0
 _WATCH_END_CONFIRMATIONS = 2
