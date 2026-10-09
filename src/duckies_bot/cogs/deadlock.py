@@ -36,11 +36,7 @@ from ..features.deadlock.scoreboard import (
     render_live_scoreboard,
 )
 from ..features.deadlock.scout_graphic import render_scout_graphic
-from ..providers.deadlock import (
-    DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
-    DeadlockAPIError,
-    LiveDemoUnavailableError,
-)
+from ..providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
 from ..storage import CompanionPairing, CompanionPairingRepository, SteamLinkRepository
 from ..views import (
     DeadlockPlayerLookupView,
@@ -96,7 +92,7 @@ _WATCH_RECONNECT_DELAYS = (3.0, 8.0, 15.0, 30.0)
 _WATCH_IDLE_SECONDS = 45.0
 _WATCH_END_CONFIRMATIONS = 2
 _COMPANION_DEMO_RETRY_DELAYS = (10.0, 20.0, 30.0, 45.0, 60.0)
-_COMPANION_DEMO_ATTEMPT_TIMEOUT_SECONDS = DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS
+_COMPANION_DEMO_ATTEMPT_TIMEOUT_SECONDS = 135.0
 _COMPANION_DEMO_STARTUP_TIMEOUT_SECONDS = 5 * 60.0
 _COMPANION_SCOUT_WATCH_DELAY_SECONDS = 3.0
 
@@ -448,7 +444,7 @@ class DeadlockCog(commands.Cog):
                 )
                 return
             stream = self.service.stream_live_match(resolved_match_id)
-            async with asyncio.timeout(DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS):
+            async with asyncio.timeout(45):
                 first_snapshot = await anext(stream)
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)

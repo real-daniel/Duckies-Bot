@@ -15,11 +15,7 @@ from .features.tarkov.service import TarkovService
 from .features.tarkov.quest_log import QuestLogService
 from .features.tarkov.profit import ProfitService
 from .providers.ocr import RapidOCRProvider
-from .providers.deadlock import (
-    DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
-    DeadlockClient,
-    DeadlockLiveClient,
-)
+from .providers.deadlock import DeadlockClient, DeadlockLiveClient
 from .providers.tarkov.client import TarkovClient
 from .storage import (
     BroadcastURLRepository,
@@ -47,10 +43,7 @@ class DuckiesBot(commands.Bot):
         )
         self.deadlock_live_client = DeadlockLiveClient(
             base_url=settings.deadlock_live_events_url,
-            timeout_seconds=max(
-                settings.http_timeout_seconds,
-                DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
-            ),
+            timeout_seconds=max(settings.http_timeout_seconds, 45.0),
         )
         self.deadlock_broadcast_urls = BroadcastURLRepository(settings.database_path)
         self.deadlock_service = DeadlockService(

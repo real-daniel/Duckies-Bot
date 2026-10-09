@@ -24,14 +24,11 @@ from .errors import (
 )
 
 
-DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS = 135.0
-
-
 class DeadlockLiveClient:
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:3000",
-        timeout_seconds: float = DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
+        timeout_seconds: float = 45.0,
         session: aiohttp.ClientSession | None = None,
     ) -> None:
         if timeout_seconds <= 0:

@@ -36,11 +36,7 @@ from duckies_bot.features.deadlock.models import (
     StatueBuff,
     SteamProfile,
 )
-from duckies_bot.providers.deadlock import (
-    DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
-    DeadlockAPIError,
-    LiveDemoUnavailableError,
-)
+from duckies_bot.providers.deadlock import DeadlockAPIError, LiveDemoUnavailableError
 from duckies_bot.providers.deadlock.client import DeadlockClient
 from duckies_bot.providers.deadlock.live_client import DeadlockLiveClient
 from duckies_bot.storage import CompanionPairing
@@ -366,12 +362,6 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
-    def test_default_player_data_timeout_exceeds_lobby_cancellation_timer(self) -> None:
-        client = DeadlockLiveClient()
-
-        self.assertEqual(client.timeout_seconds, DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS)
-        self.assertGreater(client.timeout_seconds, 120)
-
     async def test_classifies_valve_demo_not_available_as_retryable(self) -> None:
         response = FakeSSEResponse(
             "Internal server error: Demo not available: error sending request for url",
