@@ -92,7 +92,7 @@ _WATCH_RECONNECT_DELAYS = (3.0, 8.0, 15.0, 30.0)
 _WATCH_IDLE_SECONDS = 45.0
 _WATCH_END_CONFIRMATIONS = 2
 _COMPANION_DEMO_RETRY_DELAYS = (10.0, 20.0, 30.0, 45.0, 60.0)
-_COMPANION_DEMO_ATTEMPT_TIMEOUT_SECONDS = 45.0
+_COMPANION_DEMO_ATTEMPT_TIMEOUT_SECONDS = 135.0
 _COMPANION_DEMO_STARTUP_TIMEOUT_SECONDS = 5 * 60.0
 _COMPANION_SCOUT_WATCH_DELAY_SECONDS = 3.0
 
@@ -775,14 +775,18 @@ class DeadlockCog(commands.Cog):
                             match_id,
                             len(connected_accounts),
                         )
-            except (LiveDemoUnavailableError, TimeoutError) as exc:
+            except (LiveDemoUnavailableError, StopAsyncIteration, TimeoutError) as exc:
                 await stream.aclose()
                 await self.service.invalidate_broadcast_url(match_id)
-                reason = (
-                    "Valve reported demo unavailable"
-                    if isinstance(exc, LiveDemoUnavailableError)
-                    else "a complete standard or Street Brawl roster did not arrive before the attempt timeout"
-                )
+                if isinstance(exc, LiveDemoUnavailableError):
+                    reason = "Valve reported demo unavailable"
+                elif isinstance(exc, StopAsyncIteration):
+                    reason = "the broadcast ended before returning a complete roster"
+                else:
+                    reason = (
+                        "a complete standard or Street Brawl roster did not arrive "
+                        "before the attempt timeout"
+                    )
                 remaining = deadline - loop.time()
                 if attempt >= len(_COMPANION_DEMO_RETRY_DELAYS) or remaining <= 0:
                     LOGGER.warning(

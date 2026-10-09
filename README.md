@@ -45,10 +45,11 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
 - Companion-triggered matches wait for a complete lobby (6v6 standard or 4v4
   Street Brawl), post a ranked scouting graphic, wait three seconds, and then
   open the live watch using the same complete broadcast snapshot.
-  They tolerate the normal Source TV startup delay. If Valve reports `Demo not
-  available` or the stream opens without producing a player snapshot, the bot
-  keeps the connecting notice, clears the cached broadcast URL, and retries for
-  up to five minutes.
+  They tolerate the normal Source TV startup delay. Each attempt waits up to 135
+  seconds for the complete roster. If Valve reports `Demo not available`, the
+  stream times out, or it ends before returning the roster, the bot keeps the
+  connecting notice, clears the cached broadcast URL, and retries for up to five
+  minutes.
 - Valve broadcast URLs are fetched once per match and cached in SQLite for six
   hours, including across bot restarts. Live and scouting lookups reuse the URL
   instead of repeatedly calling Deadlock API. Chat startup currently makes one
