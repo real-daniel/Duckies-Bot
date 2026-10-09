@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
 from typing import Any
@@ -20,15 +21,22 @@ from ...features.deadlock.models import (
 from .errors import (
     DeadlockAPIError,
     InvalidDeadlockResponseError,
+    LiveBroadcastEndedBeforeDataError,
+    LiveBroadcastStreamError,
     LiveDemoUnavailableError,
+    LivePlayerDataTimeoutError,
 )
+
+
+LOGGER = logging.getLogger(__name__)
+DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS = 135.0
 
 
 class DeadlockLiveClient:
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:3000",
-        timeout_seconds: float = 45.0,
+        timeout_seconds: float = DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
         session: aiohttp.ClientSession | None = None,
     ) -> None:
         if timeout_seconds <= 0:
@@ -48,13 +56,15 @@ class DeadlockLiveClient:
             async with asyncio.timeout(self.timeout_seconds):
                 return await anext(snapshots)
         except TimeoutError as exc:
-            raise DeadlockAPIError(
-                "The live broadcast did not produce player data before timing out."
-            ) from exc
+            LOGGER.warning(
+                "Live parser timed out before player data for match %d after %.0f seconds",
+                match_id,
+                self.timeout_seconds,
+            )
+            raise LivePlayerDataTimeoutError() from exc
         except StopAsyncIteration as exc:
-            raise DeadlockAPIError(
-                "The live broadcast ended without returning player data."
-            ) from exc
+            LOGGER.warning("Live parser ended before player data for match %d", match_id)
+            raise LiveBroadcastEndedBeforeDataError() from exc
         finally:
             await snapshots.aclose()
 
@@ -85,8 +95,10 @@ class DeadlockLiveClient:
         game_time: float | None = None
         roster_ready = False
         last_snapshot: LiveMatchSnapshot | None = None
+        saw_player_event = False
 
         try:
+            LOGGER.info("Opening live parser SSE stream for match %d", match_id)
             async with session.get(
                 url,
                 params={
@@ -96,6 +108,11 @@ class DeadlockLiveClient:
                 headers={"Accept": "text/event-stream"},
                 timeout=timeout,
             ) as response:
+                LOGGER.info(
+                    "Live parser responded for match %d with HTTP %d",
+                    match_id,
+                    response.status,
+                )
                 if response.status >= 500:
                     detail = _clean_error_detail(await response.text())
                     if "demo not available" in detail.casefold():
@@ -110,7 +127,20 @@ class DeadlockLiveClient:
                     raise DeadlockAPIError("The live broadcast could not be read yet.")
 
                 async for event_name, data in _iter_sse(response.content):
+                    if event_name == "error":
+                        detail = _clean_error_detail(data)
+                        LOGGER.warning(
+                            "Live parser stream error for match %d: %s",
+                            match_id,
+                            detail or "no detail",
+                        )
+                        raise LiveBroadcastStreamError()
                     if event_name == "end":
+                        LOGGER.info(
+                            "Live parser ended match %d stream after %d player records",
+                            match_id,
+                            len(players),
+                        )
                         return
                     if event_name == "hero_killed":
                         try:
@@ -195,6 +225,9 @@ class DeadlockLiveClient:
                     )
                     if player is None:
                         continue
+                    if not saw_player_event:
+                        saw_player_event = True
+                        LOGGER.info("Live parser produced player data for match %d", match_id)
                     players[player.account_id] = player
                     pawn_index = _optional_int(raw.get("pawn"))
                     if pawn_index is not None and pawn_index >= 0:

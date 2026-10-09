@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import time
 from collections.abc import AsyncIterator
@@ -24,16 +25,24 @@ from .models import (
     SteamProfile,
 )
 from ...providers.deadlock import (
+    DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
     DeadlockAPIError,
     DeadlockClient,
     DeadlockLiveClient,
+    LiveBroadcastEndedBeforeDataError,
+    LiveBroadcastStreamError,
     LiveDemoUnavailableError,
+    LivePlayerDataTimeoutError,
 )
 from ...storage import BroadcastURLRepository
 
 
 _BROADCAST_URL_TTL_SECONDS = 15 * 60
 _ACTIVE_MATCHES_TTL_SECONDS = 30
+_LIVE_STREAM_STARTUP_ATTEMPTS = 2
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DeadlockService:
@@ -281,19 +290,53 @@ class DeadlockService:
     ) -> AsyncIterator[LiveMatchSnapshot]:
         if self.live_client is None:
             raise DeadlockAPIError("The Deadlock live parser is not configured.")
-        for attempt in range(2):
+        for attempt in range(_LIVE_STREAM_STARTUP_ATTEMPTS):
             broadcast_url = await self._get_broadcast_url(match_id)
+            snapshots = self.live_client.stream_match_snapshots(
+                match_id,
+                broadcast_url,
+            )
+            produced_snapshot = False
             try:
-                async for snapshot in self.live_client.stream_match_snapshots(
-                    match_id,
-                    broadcast_url,
-                ):
+                try:
+                    startup_timeout = getattr(
+                        self.live_client,
+                        "timeout_seconds",
+                        DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
+                    )
+                    async with asyncio.timeout(startup_timeout):
+                        first_snapshot = await anext(snapshots)
+                except TimeoutError as exc:
+                    raise LivePlayerDataTimeoutError() from exc
+                except StopAsyncIteration as exc:
+                    raise LiveBroadcastEndedBeforeDataError() from exc
+
+                produced_snapshot = True
+                yield await self._enrich_live_snapshot(first_snapshot)
+                async for snapshot in snapshots:
                     yield await self._enrich_live_snapshot(snapshot)
                 return
-            except LiveDemoUnavailableError:
-                await self.invalidate_broadcast_url(match_id)
-                if attempt > 0:
+            except (
+                LiveBroadcastEndedBeforeDataError,
+                LiveBroadcastStreamError,
+                LiveDemoUnavailableError,
+                LivePlayerDataTimeoutError,
+            ) as exc:
+                if produced_snapshot:
                     raise
+                await self.invalidate_broadcast_url(match_id)
+                LOGGER.warning(
+                    "Live match %d startup attempt %d/%d failed before player data (%s); "
+                    "invalidated broadcast URL",
+                    match_id,
+                    attempt + 1,
+                    _LIVE_STREAM_STARTUP_ATTEMPTS,
+                    type(exc).__name__,
+                )
+                if attempt + 1 >= _LIVE_STREAM_STARTUP_ATTEMPTS:
+                    raise
+            finally:
+                await snapshots.aclose()
 
     async def invalidate_broadcast_url(self, match_id: int) -> None:
         """Discard a broadcast URL that Valve's CDN could not serve."""
@@ -409,6 +452,7 @@ class DeadlockService:
             now = time.monotonic()
             cached = self._broadcast_url_cache.get(match_id)
             if cached is not None and cached.expires_at > now:
+                LOGGER.debug("Using in-memory broadcast URL for match %d", match_id)
                 return cached.url
 
             if self.broadcast_urls is not None:
@@ -420,8 +464,10 @@ class DeadlockService:
                             expires_at=now + remaining,
                             url=stored.url,
                         )
+                        LOGGER.info("Using stored broadcast URL for match %d", match_id)
                         return stored.url
 
+            LOGGER.info("Fetching fresh broadcast URL for match %d", match_id)
             broadcast_url = await self.client.get_live_broadcast_url(match_id)
             expires_at_epoch = time.time() + _BROADCAST_URL_TTL_SECONDS
             self._broadcast_url_cache[match_id] = _CachedBroadcastURL(
@@ -443,6 +489,23 @@ class DeadlockService:
                 return await self.live_match(match_id)
             except DeadlockAPIError as exc:
                 error = exc
+                if isinstance(
+                    exc,
+                    (
+                        LiveBroadcastEndedBeforeDataError,
+                        LiveBroadcastStreamError,
+                        LiveDemoUnavailableError,
+                        LivePlayerDataTimeoutError,
+                    ),
+                ):
+                    await self.invalidate_broadcast_url(match_id)
+                    LOGGER.warning(
+                        "Live match %d lookup attempt %d/3 failed before player data (%s); "
+                        "invalidated broadcast URL",
+                        match_id,
+                        attempt + 1,
+                        type(exc).__name__,
+                    )
                 if attempt < 2:
                     await asyncio.sleep(5 * (attempt + 1))
         assert error is not None
