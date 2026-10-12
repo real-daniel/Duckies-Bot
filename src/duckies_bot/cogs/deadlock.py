@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -50,6 +50,7 @@ from ..views import (
     DeadlockPlayerSearchView,
     DeadlockScoutView,
     DeadlockWatchView,
+    LookupRetryView,
     SCOUT_GRAPHIC_FILENAME,
     WATCH_SCOREBOARD_FILENAME,
 )
@@ -176,13 +177,28 @@ class DeadlockCog(commands.Cog):
             await interaction.followup.send(str(exc), ephemeral=True)
             return
         except DeadlockAPIError as exc:
-            await interaction.followup.send(exc.user_message, ephemeral=True)
+            await self._send_lookup_retry(
+                interaction,
+                exc.user_message,
+                lambda retry_interaction, retry_view: self._retry_player_lookup(
+                    retry_interaction,
+                    retry_view,
+                    query,
+                    user,
+                ),
+            )
             return
         except Exception:
             LOGGER.exception("Unexpected error during Deadlock player lookup")
-            await interaction.followup.send(
+            await self._send_lookup_retry(
+                interaction,
                 "Something unexpected went wrong while looking up that player.",
-                ephemeral=True,
+                lambda retry_interaction, retry_view: self._retry_player_lookup(
+                    retry_interaction,
+                    retry_view,
+                    query,
+                    user,
+                ),
             )
             return
         view = DeadlockPlayerLookupView(
@@ -217,6 +233,59 @@ class DeadlockCog(commands.Cog):
             for profile in profiles[:25]
         ]
 
+    async def _retry_player_lookup(
+        self,
+        interaction: discord.Interaction,
+        retry_view: LookupRetryView,
+        query: str | None,
+        user: discord.User | None,
+    ) -> None:
+        try:
+            account_id, profile = await self._resolve_player_input(
+                interaction.user,
+                query,
+                user,
+            )
+            result = await self.service.player_lookup(account_id, profile=profile)
+        except _PlayerSearchResults as exc:
+            view = DeadlockPlayerSearchView(
+                exc.profiles,
+                requester_id=interaction.user.id,
+                service=self.service,
+            )
+            view.message = await interaction.edit_original_response(
+                content="Steam names are not unique. Match the avatar, then choose a result:",
+                embeds=list(build_player_search_embeds(exc.profiles)),
+                view=view,
+            )
+            retry_view.stop()
+            return
+        except ValueError as exc:
+            await retry_view.show_error(interaction, str(exc))
+            return
+        except DeadlockAPIError as exc:
+            await retry_view.show_error(interaction, exc.user_message)
+            return
+        except Exception:
+            LOGGER.exception("Unexpected error while retrying Deadlock player lookup")
+            await retry_view.show_error(
+                interaction,
+                "Something unexpected went wrong while looking up that player.",
+            )
+            return
+
+        view = DeadlockPlayerLookupView(
+            result,
+            requester_id=interaction.user.id,
+            service=self.service,
+        )
+        view.message = await interaction.edit_original_response(
+            content=None,
+            embed=build_player_lookup_embed(result),
+            view=view,
+        )
+        retry_view.stop()
+
     @deadlock.command(name="scout", description="Scout a new match by ID or screenshot")
     @app_commands.describe(
         match_id="Numeric match ID or top-200",
@@ -244,13 +313,28 @@ class DeadlockCog(commands.Cog):
             await interaction.followup.send(str(exc), ephemeral=True)
             return
         except DeadlockAPIError as exc:
-            await interaction.followup.send(exc.user_message, ephemeral=True)
+            await self._send_lookup_retry(
+                interaction,
+                exc.user_message,
+                lambda retry_interaction, retry_view: self._retry_scout_lookup(
+                    retry_interaction,
+                    retry_view,
+                    match_id,
+                    screenshot,
+                ),
+            )
             return
         except Exception:
             LOGGER.exception("Unexpected error during Deadlock scouting lookup")
-            await interaction.followup.send(
+            await self._send_lookup_retry(
+                interaction,
                 "Something unexpected went wrong while building the scouting report.",
-                ephemeral=True,
+                lambda retry_interaction, retry_view: self._retry_scout_lookup(
+                    retry_interaction,
+                    retry_view,
+                    match_id,
+                    screenshot,
+                ),
             )
             return
         try:
@@ -287,6 +371,52 @@ class DeadlockCog(commands.Cog):
             highlighted_id,
             ephemeral=True,
         )
+
+    async def _retry_scout_lookup(
+        self,
+        interaction: discord.Interaction,
+        retry_view: LookupRetryView,
+        match_id: str | None,
+        screenshot: discord.Attachment | None,
+    ) -> None:
+        try:
+            resolved_match_id = await self._resolve_match_input(match_id, screenshot)
+            report = await self.service.scout_match(resolved_match_id)
+            account = await self.links.get(interaction.user.id)
+            try:
+                await self.scout_templates.save(report)
+            except Exception:
+                LOGGER.warning("Could not refresh the local scouting template", exc_info=True)
+            highlighted_id = account.account_id if account is not None else None
+            view = DeadlockScoutView(
+                report,
+                requester_id=interaction.user.id,
+                highlighted_account_id=highlighted_id,
+            )
+            view.attachment_renderer = self._render_scout_graphic
+            graphic = await self._render_scout_graphic(view)
+        except ValueError as exc:
+            await retry_view.show_error(interaction, str(exc))
+            return
+        except DeadlockAPIError as exc:
+            await retry_view.show_error(interaction, exc.user_message)
+            return
+        except Exception:
+            LOGGER.exception("Unexpected error while retrying Deadlock scouting lookup")
+            await retry_view.show_error(
+                interaction,
+                "Something unexpected went wrong while building the scouting report.",
+            )
+            return
+
+        view.message = await interaction.edit_original_response(
+            content=None,
+            attachments=[
+                discord.File(BytesIO(graphic), filename=SCOUT_GRAPHIC_FILENAME)
+            ],
+            view=view,
+        )
+        retry_view.stop()
 
     @deadlock.command(name="chat", description="Relay a live match's chat into a new thread")
     @app_commands.describe(
@@ -639,6 +769,31 @@ class DeadlockCog(commands.Cog):
             f"Companion detected match `{match_id}`. Waiting for the full lobby to connect…",
             allowed_mentions=discord.AllowedMentions.none(),
         )
+        await self._run_companion_watch(pairing, match_id, channel, notice)
+
+    async def _run_companion_watch(
+        self,
+        pairing: CompanionPairing,
+        match_id: int,
+        channel: discord.TextChannel | discord.Thread,
+        notice: discord.Message,
+        *,
+        retry_view: LookupRetryView | None = None,
+        retry_interaction: discord.Interaction | None = None,
+    ) -> None:
+        key = (pairing.guild_id, match_id)
+        existing = self._live_watches.get(key)
+        if existing is not None and not existing.task.done():
+            if retry_view is not None:
+                retry_view.stop()
+            await notice.edit(
+                content=f"A live watch for match `{match_id}` is already running.",
+                embed=None,
+                attachments=[],
+                view=None,
+            )
+            return
+
         stream: AsyncIterator[LiveMatchSnapshot] | None = None
         try:
             stream, first_snapshot = await self._wait_for_companion_demo(
@@ -648,11 +803,17 @@ class DeadlockCog(commands.Cog):
         except TimeoutError:
             if stream is not None:
                 await stream.aclose()
-            await notice.edit(
-                content=(
+            await self._show_companion_lookup_error(
+                pairing,
+                match_id,
+                channel,
+                notice,
+                (
                     f"Companion detected match `{match_id}`, but the delayed live broadcast "
                     "did not become ready within five minutes."
-                )
+                ),
+                retry_view=retry_view,
+                retry_interaction=retry_interaction,
             )
             return
         except (DeadlockAPIError, StopAsyncIteration) as exc:
@@ -663,13 +824,29 @@ class DeadlockCog(commands.Cog):
                 if isinstance(exc, DeadlockAPIError)
                 else "The live broadcast ended without returning player data."
             )
-            await notice.edit(content=f"Could not start match `{match_id}`: {message}")
+            await self._show_companion_lookup_error(
+                pairing,
+                match_id,
+                channel,
+                notice,
+                f"Could not start match `{match_id}`: {message}",
+                retry_view=retry_view,
+                retry_interaction=retry_interaction,
+            )
             return
         except Exception:
             if stream is not None:
                 await stream.aclose()
             LOGGER.exception("Unexpected error while starting companion watch %d", match_id)
-            await notice.edit(content=f"Something went wrong while starting match `{match_id}`.")
+            await self._show_companion_lookup_error(
+                pairing,
+                match_id,
+                channel,
+                notice,
+                f"Something went wrong while starting match `{match_id}`.",
+                retry_view=retry_view,
+                retry_interaction=retry_interaction,
+            )
             return
 
         account = await self.links.get(pairing.discord_user_id)
@@ -696,14 +873,20 @@ class DeadlockCog(commands.Cog):
                 view=scout_view,
             )
             scout_view.message = notice
+            if retry_view is not None:
+                retry_view.stop()
         except Exception:
             LOGGER.exception("Could not build companion scout for match %d", match_id)
             await notice.edit(
                 content=(
                     f"Companion detected match `{match_id}`. Scouting was unavailable; "
                     "starting the live watch…"
-                )
+                ),
+                attachments=[],
+                view=None,
             )
+            if retry_view is not None:
+                retry_view.stop()
 
         await asyncio.sleep(_COMPANION_SCOUT_WATCH_DELAY_SECONDS)
         view = DeadlockWatchView(
@@ -731,6 +914,43 @@ class DeadlockCog(commands.Cog):
             pairing.discord_user_id,
             task,
             view,
+        )
+
+    async def _show_companion_lookup_error(
+        self,
+        pairing: CompanionPairing,
+        match_id: int,
+        channel: discord.TextChannel | discord.Thread,
+        notice: discord.Message,
+        message: str,
+        *,
+        retry_view: LookupRetryView | None,
+        retry_interaction: discord.Interaction | None,
+    ) -> None:
+        if retry_view is not None and retry_interaction is not None:
+            await retry_view.show_error(retry_interaction, message)
+            return
+
+        async def retry(
+            interaction: discord.Interaction,
+            view: LookupRetryView,
+        ) -> None:
+            await self._run_companion_watch(
+                pairing,
+                match_id,
+                channel,
+                notice,
+                retry_view=view,
+                retry_interaction=interaction,
+            )
+
+        view = LookupRetryView(pairing.discord_user_id, retry, timeout=300)
+        view.message = notice
+        await notice.edit(
+            content=message,
+            embed=None,
+            attachments=[],
+            view=view,
         )
 
     async def _wait_for_companion_demo(
@@ -862,6 +1082,23 @@ class DeadlockCog(commands.Cog):
         if match_id <= 0:
             raise ValueError("Enter a positive numeric match ID or `top-200`.")
         return match_id
+
+    async def _send_lookup_retry(
+        self,
+        interaction: discord.Interaction,
+        message: str,
+        retry: Callable[
+            [discord.Interaction, LookupRetryView],
+            Awaitable[None],
+        ],
+    ) -> None:
+        view = LookupRetryView(interaction.user.id, retry)
+        view.message = await interaction.followup.send(
+            message,
+            ephemeral=True,
+            view=view,
+            wait=True,
+        )
 
     async def _resolve_player_input(
         self,
