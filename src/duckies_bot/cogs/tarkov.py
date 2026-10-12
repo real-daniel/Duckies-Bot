@@ -1,6 +1,7 @@
 """Discord commands for PvE Tarkov information."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Literal
 
 import discord
@@ -19,6 +20,7 @@ from ..features.tarkov.quest_log import QuestLogService
 from ..features.tarkov.profit import ProfitService
 from ..features.tarkov.service import TarkovService
 from ..providers.tarkov.errors import InvalidQuestLogImageError, TarkovAPIError
+from ..views import LookupRetryView
 
 
 LOGGER = logging.getLogger(__name__)
@@ -46,13 +48,26 @@ class TarkovCog(commands.Cog):
         try:
             item = await self.service.lookup_item(name)
         except TarkovAPIError as exc:
-            await interaction.followup.send(exc.user_message, ephemeral=True)
+            await self._send_lookup_retry(
+                interaction,
+                exc.user_message,
+                lambda retry_interaction, retry_view: self._retry_item_lookup(
+                    retry_interaction,
+                    retry_view,
+                    name,
+                ),
+            )
             return
         except Exception:
             LOGGER.exception("Unexpected error while looking up Tarkov item %r", name)
-            await interaction.followup.send(
+            await self._send_lookup_retry(
+                interaction,
                 "Something unexpected went wrong while looking up that item.",
-                ephemeral=True,
+                lambda retry_interaction, retry_view: self._retry_item_lookup(
+                    retry_interaction,
+                    retry_view,
+                    name,
+                ),
             )
             return
 
@@ -73,19 +88,107 @@ class TarkovCog(commands.Cog):
         try:
             task = await self.service.lookup_task(name)
         except TarkovAPIError as exc:
-            await interaction.followup.send(exc.user_message, ephemeral=True)
+            await self._send_lookup_retry(
+                interaction,
+                exc.user_message,
+                lambda retry_interaction, retry_view: self._retry_task_lookup(
+                    retry_interaction,
+                    retry_view,
+                    name,
+                    detailed,
+                ),
+            )
             return
         except Exception:
             LOGGER.exception("Unexpected error while looking up Tarkov task %r", name)
-            await interaction.followup.send(
+            await self._send_lookup_retry(
+                interaction,
                 "Something unexpected went wrong while looking up that task.",
-                ephemeral=True,
+                lambda retry_interaction, retry_view: self._retry_task_lookup(
+                    retry_interaction,
+                    retry_view,
+                    name,
+                    detailed,
+                ),
             )
             return
 
         embeds = build_task_embeds(task, detailed=detailed)
         for index in range(0, len(embeds), 10):
             await interaction.followup.send(embeds=list(embeds[index : index + 10]))
+
+    async def _retry_item_lookup(
+        self,
+        interaction: discord.Interaction,
+        retry_view: LookupRetryView,
+        name: str,
+    ) -> None:
+        try:
+            item = await self.service.lookup_item(name)
+        except TarkovAPIError as exc:
+            await retry_view.show_error(interaction, exc.user_message)
+            return
+        except Exception:
+            LOGGER.exception("Unexpected error while retrying Tarkov item lookup %r", name)
+            await retry_view.show_error(
+                interaction,
+                "Something unexpected went wrong while looking up that item.",
+            )
+            return
+
+        await interaction.edit_original_response(
+            content=None,
+            embed=build_item_embed(item),
+            view=None,
+        )
+        retry_view.stop()
+
+    async def _retry_task_lookup(
+        self,
+        interaction: discord.Interaction,
+        retry_view: LookupRetryView,
+        name: str,
+        detailed: bool,
+    ) -> None:
+        try:
+            task = await self.service.lookup_task(name)
+        except TarkovAPIError as exc:
+            await retry_view.show_error(interaction, exc.user_message)
+            return
+        except Exception:
+            LOGGER.exception("Unexpected error while retrying Tarkov task lookup %r", name)
+            await retry_view.show_error(
+                interaction,
+                "Something unexpected went wrong while looking up that task.",
+            )
+            return
+
+        embeds = build_task_embeds(task, detailed=detailed)
+        await interaction.edit_original_response(
+            content=None,
+            embeds=list(embeds[:10]),
+            view=None,
+        )
+        retry_view.stop()
+        for index in range(10, len(embeds), 10):
+            await interaction.followup.send(embeds=list(embeds[index : index + 10]))
+
+    async def _send_lookup_retry(
+        self,
+        interaction: discord.Interaction,
+        message: str,
+        retry: Callable[
+            [discord.Interaction, LookupRetryView],
+            Awaitable[None],
+        ],
+    ) -> None:
+        view = LookupRetryView(interaction.user.id, retry)
+        view.message = await interaction.followup.send(
+            message,
+            ephemeral=True,
+            view=view,
+            wait=True,
+        )
 
     @tarkov.command(
         name="quest-log",
