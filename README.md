@@ -5,6 +5,12 @@ static datasets at `https://json.tarkov.dev`.
 
 It also supports reusable Steam account links and Deadlock live-match lookups:
 
+- `/league player riot_id:<name#tag> region:<platform>` shows official ranked
+  standings and recent match history across every returned queue. Choose any
+  displayed match to open its detailed performance, build, combat, vision,
+  objective, and full-team scoreboard statistics. Set `RIOT_API_KEY` on the bot
+  host; the key is never sent to Discord clients.
+
 - `/steam link steam_id:<id>` associates your Discord user with a SteamID64,
   SteamID3, SteamID2, or numeric Steam profile URL.
 - `/steam show user:<optional>` shows the account used by account-aware commands.
@@ -182,6 +188,7 @@ Optional settings:
 - `TARKOV_API_URL` defaults to `https://json.tarkov.dev`.
 - `DEADLOCK_API_URL` defaults to `https://api.deadlock-api.com`.
 - `DEADLOCK_API_KEY` is optional.
+- `RIOT_API_KEY` enables Riot-backed League player and match lookups.
 - `DEADLOCK_LIVE_EVENTS_URL` defaults to `http://127.0.0.1:3000`.
 - `DEADLOCK_SCOUT_TEMPLATE_PATH` defaults to
   `data/deadlock_scout_template.json`.

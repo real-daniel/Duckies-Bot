@@ -6,15 +6,18 @@ import discord
 from discord.ext import commands
 
 from .cogs.deadlock import DeadlockCog
+from .cogs.league import LeagueCog
 from .cogs.steam import SteamCog
 from .cogs.tarkov import TarkovCog
 from .companion_api import CompanionAPIServer
 from .config import Settings, load_settings
 from .features.deadlock import DeadlockScreenshotReader, DeadlockService, ScoutTemplateCache
+from .features.league import LeagueService
 from .features.tarkov.service import TarkovService
 from .features.tarkov.quest_log import QuestLogService
 from .features.tarkov.profit import ProfitService
 from .providers.ocr import RapidOCRProvider
+from .providers.riot import RiotClient
 from .providers.deadlock import (
     DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
     DeadlockClient,
@@ -45,6 +48,11 @@ class DuckiesBot(commands.Bot):
             timeout_seconds=settings.http_timeout_seconds,
             api_key=settings.deadlock_api_key,
         )
+        self.riot_client = RiotClient(
+            api_key=settings.riot_api_key,
+            timeout_seconds=settings.http_timeout_seconds,
+        )
+        self.league_service = LeagueService(self.riot_client)
         self.deadlock_live_client = DeadlockLiveClient(
             base_url=settings.deadlock_live_events_url,
             timeout_seconds=max(
@@ -86,6 +94,7 @@ class DuckiesBot(commands.Bot):
             self.deadlock_scout_templates,
         )
         await self.add_cog(deadlock_cog)
+        await self.add_cog(LeagueCog(self, self.league_service))
         self.companion_api = CompanionAPIServer(
             self.companion_pairings,
             deadlock_cog.start_companion_watch,
@@ -116,6 +125,7 @@ class DuckiesBot(commands.Bot):
         await self.tarkov_client.close()
         await self.deadlock_client.close()
         await self.deadlock_live_client.close()
+        await self.riot_client.close()
         await super().close()
 
     async def on_ready(self) -> None:
