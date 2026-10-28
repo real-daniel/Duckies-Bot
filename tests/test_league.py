@@ -17,6 +17,7 @@ from duckies_bot.features.league.models import (
 from duckies_bot.features.league.service import LeagueService, parse_riot_id
 from duckies_bot.providers.riot.client import RiotClient, regional_route
 from duckies_bot.providers.riot.errors import RiotAPIError
+from duckies_bot.presentation import Palette
 from duckies_bot.views.league_player import LeaguePlayerView
 
 
@@ -242,17 +243,32 @@ class LeagueFeatureTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([match.queue_id for match in lookup.matches], [420, 450, 1700])
         overview = build_player_embed(lookup)
-        history = next(field.value for field in overview.fields if field.name == "Match history")
+        history = "\n".join(
+            field.value for field in overview.fields if field.name.startswith("Recent matches")
+        )
         self.assertIn("Ranked Solo/Duo", history)
         self.assertIn("ARAM", history)
         self.assertIn("Arena", history)
+        self.assertIn("🟩", history)
+        self.assertIn("🟥", history)
 
         detail = build_match_embed(lookup, 1)
         field_names = {field.name for field in detail.fields}
-        expected = {"Performance", "Combat", "Vision and objectives", "Final build"}
+        expected = {
+            "KDA & participation",
+            "Farm & economy",
+            "Vision",
+            "Damage profile",
+            "Objectives & control",
+            "Final build",
+        }
         self.assertTrue(expected <= field_names)
+        self.assertEqual(detail.color, Palette.RED)
+        self.assertTrue(detail.title.startswith("🟥 Defeat"))
         build = next(field.value for field in detail.fields if field.name == "Final build")
         self.assertIn("Rabadon's Deathcap", build)
+        self.assertTrue(all(len(field.value) <= 1024 for field in overview.fields))
+        self.assertTrue(all(len(field.value) <= 1024 for field in detail.fields))
 
         view = LeaguePlayerView(lookup, requester_id=123)
         select = next(child for child in view.children if hasattr(child, "options"))

@@ -47,10 +47,10 @@ def queue_name(match: LeagueMatch) -> str:
 
 
 def build_player_embed(lookup: LeaguePlayerLookup) -> discord.Embed:
-    level = f" · Level {lookup.summoner.level:,}" if lookup.summoner else ""
+    level = f"Level {lookup.summoner.level:,}" if lookup.summoner else "Level unavailable"
     embed = make_embed(
-        f"{lookup.account.riot_id} — League profile",
-        f"**{lookup.platform}**{level}\nRecent history includes all modes returned by Riot.",
+        f"League profile · {lookup.account.riot_id}",
+        f"**{lookup.platform}**  •  {level}\nRanked standings and recent games across every mode.",
         tone="info",
     )
     if lookup.summoner and lookup.data_dragon_version:
@@ -65,14 +65,14 @@ def build_player_embed(lookup: LeaguePlayerLookup) -> discord.Embed:
     if lookup.ranked_entries:
         for entry in lookup.ranked_entries:
             embed.add_field(
-                name=field_name(_ranked_queue_name(entry)),
+                name=field_name(f"🏆 {_ranked_queue_name(entry)}"),
                 value=_ranked_entry(entry),
                 inline=True,
             )
     else:
         embed.add_field(
-            name=field_name("Ranked standings"),
-            value="No current ranked placement returned by Riot.",
+            name=field_name("🏆 Ranked standings"),
+            value="*No current ranked placement returned by Riot.*",
             inline=False,
         )
 
@@ -86,12 +86,17 @@ def build_player_embed(lookup: LeaguePlayerLookup) -> discord.Embed:
         kills = sum(player.kills for _, player in target_matches)
         deaths = sum(player.deaths for _, player in target_matches)
         assists = sum(player.assists for _, player in target_matches)
+        losses = len(target_matches) - wins
+        aggregate_kda = (kills + assists) / max(deaths, 1)
         embed.add_field(
             name=field_name(f"Recent form · {len(target_matches)} games"),
             value=(
-                f"**{wins}W–{len(target_matches) - wins}L** · {wins / len(target_matches):.0%} WR\n"
-                f"`{kills / len(target_matches):.1f}/{deaths / len(target_matches):.1f}/"
-                f"{assists / len(target_matches):.1f}` average K/D/A"
+                f"🟩 **{wins} wins**  •  🟥 **{losses} losses**  •  "
+                f"**{wins / len(target_matches):.0%}** win rate\n"
+                f"`{kills / len(target_matches):.1f} / "
+                f"{deaths / len(target_matches):.1f} / "
+                f"{assists / len(target_matches):.1f}` average  •  "
+                f"**{aggregate_kda:.2f}** KDA"
             ),
             inline=False,
         )
@@ -99,15 +104,11 @@ def build_player_embed(lookup: LeaguePlayerLookup) -> discord.Embed:
             _history_line(index, match, player)
             for index, (match, player) in enumerate(target_matches, start=1)
         ]
-        embed.add_field(
-            name=field_name("Match history"),
-            value=_field_lines(lines),
-            inline=False,
-        )
+        _add_history_fields(embed, lines)
     else:
         embed.add_field(
-            name=field_name("Match history"),
-            value="No recent matches were returned by Riot.",
+            name=field_name("Recent matches"),
+            value="*No recent matches were returned by Riot.*",
             inline=False,
         )
     finish_embed(
@@ -125,16 +126,20 @@ def build_match_embed(lookup: LeaguePlayerLookup, match_index: int) -> discord.E
     if player is None:
         raise ValueError("The selected player is missing from this match.")
     outcome = _result_label(player)
-    tone = "success" if player.win else "danger"
+    result_marker = _result_marker(player)
+    tone = "warning" if player.placement else ("success" if player.win else "danger")
     timestamp = match.started_at_ms // 1000
     position = _title_token(player.team_position, "Unknown role")
     embed = make_embed(
-        f"{outcome} · {player.champion_name} · {queue_name(match)}",
+        f"{result_marker} {outcome} · {player.champion_name}",
         (
-            f"{lookup.account.riot_id} · **{position}** · {_duration(match.duration_seconds)}\n"
-            f"Played <t:{timestamp}:f> (<t:{timestamp}:R>)"
+            f"**{queue_name(match)}**  •  {position}  •  {_duration(match.duration_seconds)}\n"
+            f"{lookup.account.riot_id}  •  Played <t:{timestamp}:f> (<t:{timestamp}:R>)"
             if timestamp
-            else f"{lookup.account.riot_id} · **{position}** · {_duration(match.duration_seconds)}"
+            else (
+                f"**{queue_name(match)}**  •  {position}  •  "
+                f"{_duration(match.duration_seconds)}\n{lookup.account.riot_id}"
+            )
         ),
         tone=tone,
     )
@@ -150,39 +155,52 @@ def build_match_embed(lookup: LeaguePlayerLookup, match_index: int) -> discord.E
     team_kills = max(sum(item.kills for item in teammates), 1)
     minutes = max(match.duration_seconds / 60, 1 / 60)
     embed.add_field(
-        name=field_name("Performance"),
+        name=field_name("KDA & participation"),
         value=(
-            f"K/D/A **{player.kills}/{player.deaths}/{player.assists}** · {player.kda:.2f} KDA"
-            f"{' · Placement #' + str(player.placement) if player.placement else ''}\n"
-            f"Kill participation **{(player.kills + player.assists) / team_kills:.0%}** · "
-            f"Level {player.champion_level}\n"
-            f"CS **{player.creep_score:,}** · {player.creep_score / minutes:.1f}/min · "
-            f"Gold **{player.gold_earned:,}**"
+            f"**{player.kills} / {player.deaths} / {player.assists}**\n"
+            f"{player.kda:.2f} KDA  •  "
+            f"{(player.kills + player.assists) / team_kills:.0%} KP"
+            f"{'  •  #' + str(player.placement) if player.placement else ''}"
         ),
-        inline=False,
+        inline=True,
     )
     embed.add_field(
-        name=field_name("Combat"),
+        name=field_name("Farm & economy"),
         value=(
-            f"Champion damage **{player.total_damage_to_champions:,}** · "
+            f"**{player.creep_score:,} CS**  •  {player.creep_score / minutes:.1f}/min\n"
+            f"{player.gold_earned:,} gold  •  Level {player.champion_level}"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Vision"),
+        value=(
+            f"**{player.vision_score} score**\n"
+            f"{player.wards_placed} placed  •  {player.wards_killed} cleared  •  "
+            f"{player.control_wards_bought} control"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name=field_name("Damage profile"),
+        value=(
+            f"**{player.total_damage_to_champions:,}** champion damage  •  "
             f"{player.total_damage_to_champions / minutes:,.0f}/min\n"
-            f"Physical {player.physical_damage_to_champions:,} · "
-            f"Magic {player.magic_damage_to_champions:,} · "
-            f"True {player.true_damage_to_champions:,}\n"
-            f"Taken {player.total_damage_taken:,} · Healed {player.total_heal:,} · "
-            f"Largest multikill {_multi_kill(player.largest_multi_kill)}"
+            f"`{player.physical_damage_to_champions:,}` physical  •  "
+            f"`{player.magic_damage_to_champions:,}` magic  •  "
+            f"`{player.true_damage_to_champions:,}` true\n"
+            f"{player.total_damage_taken:,} taken  •  {player.total_heal:,} healed  •  "
+            f"{_multi_kill(player.largest_multi_kill)} multikill"
         ),
         inline=False,
     )
     embed.add_field(
-        name=field_name("Vision and objectives"),
+        name=field_name("Objectives & control"),
         value=(
-            f"Vision **{player.vision_score}** · Wards {player.wards_placed} placed / "
-            f"{player.wards_killed} cleared · Control wards {player.control_wards_bought}\n"
-            f"Objective damage **{player.damage_to_objectives:,}** · "
-            f"Turret damage {player.damage_to_turrets:,}\n"
-            f"Turrets {player.turret_kills} · Inhibitors {player.inhibitor_kills} · "
-            f"CC time {player.total_time_cc_dealt}s"
+            f"**{player.damage_to_objectives:,}** objective damage  •  "
+            f"{player.damage_to_turrets:,} turret damage\n"
+            f"{player.turret_kills} turrets  •  {player.inhibitor_kills} inhibitors  •  "
+            f"{player.total_time_cc_dealt}s crowd control"
         ),
         inline=False,
     )
@@ -199,7 +217,10 @@ def build_match_embed(lookup: LeaguePlayerLookup, match_index: int) -> discord.E
         won = any(item.win for item in participants)
         lines = [_scoreboard_line(item, lookup.account.puuid) for item in participants]
         embed.add_field(
-            name=field_name(f"{_team_name(team_id)} · {'Victory' if won else 'Defeat'}"),
+            name=field_name(
+                f"{_team_marker(team_id)} {_team_name(team_id)}  •  "
+                f"{'🟩 Victory' if won else '🟥 Defeat'}"
+            ),
             value=_field_lines(lines),
             inline=False,
         )
@@ -213,12 +234,12 @@ def build_match_embed(lookup: LeaguePlayerLookup, match_index: int) -> discord.E
 
 
 def _history_line(index: int, match: LeagueMatch, player: MatchParticipant) -> str:
-    result = f"#{player.placement}" if player.placement else ("W" if player.win else "L")
     timestamp = match.started_at_ms // 1000
-    when = f" · <t:{timestamp}:R>" if timestamp else ""
+    when = f"  •  <t:{timestamp}:R>" if timestamp else ""
     return (
-        f"`{index:>2}. {result}` **{player.champion_name}** · {queue_name(match)} · "
-        f"`{player.kills}/{player.deaths}/{player.assists}` · {player.creep_score} CS{when}"
+        f"{_result_marker(player)} **{index}. {player.champion_name}**  —  {queue_name(match)}\n"
+        f"└ `{player.kills} / {player.deaths} / {player.assists}`  •  "
+        f"{player.creep_score} CS  •  {_duration(match.duration_seconds)}{when}"
     )
 
 
@@ -226,8 +247,8 @@ def _ranked_entry(entry: RankedEntry) -> str:
     win_rate = f"{entry.win_rate:.1%}" if entry.win_rate is not None else "—"
     streak = " · Hot streak" if entry.hot_streak else ""
     return (
-        f"**{entry.tier.title()} {entry.rank}** · {entry.league_points} LP\n"
-        f"{entry.wins:,}W–{entry.losses:,}L · {win_rate} WR{streak}"
+        f"**{entry.tier.title()} {entry.rank}**  •  {entry.league_points} LP\n"
+        f"🟩 {entry.wins:,}W  •  🟥 {entry.losses:,}L  •  **{win_rate}** WR{streak}"
     )
 
 
@@ -246,11 +267,13 @@ def _item_build(player: MatchParticipant, item_names: Mapping[int, str]) -> str:
 
 def _scoreboard_line(player: MatchParticipant, target_puuid: str) -> str:
     name = discord.utils.escape_markdown(player.riot_id)[:22]
-    marker = "**" if player.puuid == target_puuid else ""
+    selected = player.puuid == target_puuid
+    marker = "**" if selected else ""
+    pointer = "▸" if selected else "•"
     return (
-        f"{marker}{name}{marker} · {player.champion_name} · "
-        f"`{player.kills}/{player.deaths}/{player.assists}` · "
-        f"{player.creep_score} CS · {_compact(player.total_damage_to_champions)} dmg"
+        f"{pointer} {marker}{name}{marker} — {player.champion_name}\n"
+        f"  `{player.kills}/{player.deaths}/{player.assists}`  •  "
+        f"{player.creep_score} CS  •  {_compact(player.total_damage_to_champions)} dmg"
     )
 
 
@@ -286,6 +309,34 @@ def _result_label(player: MatchParticipant) -> str:
     if player.placement:
         return f"#{player.placement} Place"
     return "Victory" if player.win else "Defeat"
+
+
+def _result_marker(player: MatchParticipant) -> str:
+    if player.placement:
+        return "🟨"
+    return "🟩" if player.win else "🟥"
+
+
+def _team_marker(team_id: int) -> str:
+    return {100: "🟦", 200: "🟥"}.get(team_id, "⬜")
+
+
+def _add_history_fields(embed: discord.Embed, lines: list[str]) -> None:
+    remaining = list(lines)
+    page = 0
+    while remaining:
+        page += 1
+        kept: list[str] = []
+        length = 0
+        while remaining:
+            line = remaining[0]
+            added = len(line) + (2 if kept else 0)
+            if kept and (length + added > 1024 or len(kept) >= 6):
+                break
+            kept.append(remaining.pop(0))
+            length += added
+        name = "Recent matches" if page == 1 else "Recent matches · continued"
+        embed.add_field(name=field_name(name), value="\n\n".join(kept), inline=False)
 
 
 def _field_lines(lines: list[str]) -> str:
