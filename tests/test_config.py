@@ -10,6 +10,7 @@ class SettingsTests(unittest.TestCase):
         settings = Settings(discord_token="token")
         self.assertEqual(settings.tarkov_api_url, "https://json.tarkov.dev")
         self.assertEqual(settings.deadlock_api_url, "https://api.deadlock-api.com")
+        self.assertIsNone(settings.riot_api_key)
         self.assertEqual(settings.deadlock_live_events_url, "http://127.0.0.1:3000")
         self.assertEqual(
             settings.deadlock_scout_template_path,
