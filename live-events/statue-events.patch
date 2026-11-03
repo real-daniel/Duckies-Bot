@@ -1,8 +1,8 @@
 diff --git a/live-events/src/demo_parser/types.rs b/live-events/src/demo_parser/types.rs
-index 6a99882c..0181160e 100644
+index ce67372..1262a93 100644
 --- a/live-events/src/demo_parser/types.rs
 +++ b/live-events/src/demo_parser/types.rs
-@@ -98,6 +98,14 @@ pub(super) enum DemoEventPayload {
+@@ -108,6 +108,14 @@ pub(super) enum DemoEventPayload {
          /// Packed `m_nUpgradeInfo`; bit 23 (`0x800000`) marks the item as corrupted.
          upgrade_info: u32,
      },
@@ -17,19 +17,11 @@ index 6a99882c..0181160e 100644
      TickEnd,
  }
  
-@@ -119,6 +127,7 @@ impl Display for DemoEventPayload {
-             Self::CorruptedItemShopSpawn { .. } => write!(f, "corrupted_item_shop_spawn"),
-             Self::CorruptedItemShopRestock { .. } => write!(f, "corrupted_item_shop_restock"),
-             Self::CorruptedItem { .. } => write!(f, "corrupted_item"),
-+            Self::StatueBuff { .. } => write!(f, "statue_buff"),
-             Self::TickEnd => write!(f, "tick_end"),
-         }
-     }
 diff --git a/live-events/src/demo_parser/visitor.rs b/live-events/src/demo_parser/visitor.rs
-index 51ceb5a8..5ac5c2e0 100644
+index d7ca060..a906637 100644
 --- a/live-events/src/demo_parser/visitor.rs
 +++ b/live-events/src/demo_parser/visitor.rs
-@@ -5,7 +5,7 @@ use std::collections::HashSet;
+@@ -4,7 +4,7 @@ use std::collections::HashSet;
  
  use axum::response::sse::Event;
  use haste::demostream::CmdHeader;
@@ -37,8 +29,8 @@ index 51ceb5a8..5ac5c2e0 100644
 +use haste::entities::{DeltaHeader, Entity, ehandle_to_index};
  use haste::parser::{AsyncVisitor, Context};
  use haste::stringtables::StringTableItem;
- use prost::Message;
-@@ -53,6 +53,7 @@ pub(crate) struct SendingVisitor {
+ use prost::Message as _;
+@@ -49,6 +49,7 @@ pub(crate) struct SendingVisitor {
      broker: BrokerStock,
      /// Item entities already reported as corrupted.
      corrupted_items: HashSet<i32>,
@@ -46,7 +38,7 @@ index 51ceb5a8..5ac5c2e0 100644
  }
  
  impl SendingVisitor {
-@@ -72,6 +73,7 @@ impl SendingVisitor {
+@@ -68,6 +69,7 @@ impl SendingVisitor {
              banned_heroes: None,
              broker: BrokerStock::default(),
              corrupted_items: HashSet::new(),
@@ -54,7 +46,7 @@ index 51ceb5a8..5ac5c2e0 100644
          }
      }
  }
-@@ -401,8 +403,92 @@ impl SendingVisitor {
+@@ -413,8 +415,92 @@ impl SendingVisitor {
              self.game_time = total_time - self.rules.game_start_time.unwrap_or_default();
          }
  
@@ -110,7 +102,7 @@ index 51ceb5a8..5ac5c2e0 100644
 +    }
 +}
 +
-+#[derive(Clone, PartialEq, Message)]
++#[derive(Clone, PartialEq, prost::Message)]
 +struct ModifierTableEntry {
 +    #[prost(int32, optional, tag = "1")]
 +    entry_type: Option<i32>,
@@ -146,12 +138,12 @@ index 51ceb5a8..5ac5c2e0 100644
 +    })
  }
  
- fn music_queue_name(queue: CitadelMusicMsgType) -> &'static str {
+ const fn music_queue_name(queue: CitadelMusicMsgType) -> &'static str {
 diff --git a/live-events/src/events.rs b/live-events/src/events.rs
-index 986fe54d..9c0b2067 100644
+index fac4e69..906ec29 100644
 --- a/live-events/src/events.rs
 +++ b/live-events/src/events.rs
-@@ -58,6 +58,7 @@ fn all_sse_events() -> Vec<String> {
+@@ -59,6 +59,7 @@ fn all_sse_events() -> Vec<String> {
                  "corrupted_item_shop_spawn",
                  "corrupted_item_shop_restock",
                  "corrupted_item",

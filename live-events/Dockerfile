@@ -1,6 +1,6 @@
-ARG UPSTREAM_COMMIT=01c61da752aaf382678c43df495949841023c363
+ARG UPSTREAM_COMMIT=db38f5483a5317a62e9a67f8e3e531dc4b888aaa
 
-FROM rust:1.98-slim-trixie AS builder
+FROM rust:1.99-slim-trixie AS builder
 ARG UPSTREAM_COMMIT
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
