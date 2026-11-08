@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 import discord
 
 from ..accounts.steam import STEAM_ID64_OFFSET
 from .models import (
+    ItemAnalysis,
     LiveMatchSnapshot,
     LivePlayer,
     MatchScout,
@@ -16,6 +18,93 @@ from .models import (
     SteamProfile,
 )
 from ...presentation import field_name, finish_embed, make_embed
+
+
+def build_item_analysis_embed(analysis: ItemAnalysis) -> discord.Embed:
+    stats = analysis.stats
+    win_rate = stats.win_rate or 0.0
+    delta = analysis.win_rate_delta
+    tone = "info"
+    if "Strong" in analysis.verdict or "Above" in analysis.verdict:
+        tone = "success"
+    elif "Weak" in analysis.verdict or "Below" in analysis.verdict:
+        tone = "danger"
+    elif "little" in analysis.verdict or "small" in analysis.verdict:
+        tone = "warning"
+
+    subject = (
+        f"{analysis.item.name} on {analysis.hero.name}"
+        if analysis.hero
+        else analysis.item.name
+    )
+    comparison = (
+        f" compared with **{analysis.comparison_item.name}**"
+        if analysis.comparison_item else ""
+    )
+    embed = make_embed(
+        f"{analysis.item.name} — {analysis.verdict}",
+        (
+            f"In **{analysis.rank_label}** ranked matches on the current patch, "
+            f"**{subject}** has won **{win_rate:.1%}** of recorded purchases{comparison}."
+        ),
+        tone=tone,
+        url=analysis.patch.link,
+    )
+    embed.add_field(
+        name=field_name("Recorded performance"),
+        value=(
+            f"**{stats.wins:,}W–{stats.losses:,}L** · {stats.matches:,} purchases\n"
+            f"95% confidence interval **{analysis.confidence_low:.1%}–"
+            f"{analysis.confidence_high:.1%}**\n"
+            f"Average purchase time **{_duration_from_float(stats.average_buy_time_seconds)}**"
+        ),
+        inline=False,
+    )
+    if analysis.peer_win_rate is not None and delta is not None:
+        direction = "above" if delta >= 0 else "below"
+        baseline_label = (
+            f"{analysis.comparison_item.name}'s win rate is "
+            if analysis.comparison_item
+            else f"The median for similar {analysis.item.slot_type or 'shop'} items is "
+        )
+        comparison_scope = (
+            "that item."
+            if analysis.comparison_item
+            else f"that baseline across {analysis.peer_count} comparable items."
+        )
+        embed.add_field(
+            name=field_name(
+                f"Compared with {analysis.comparison_item.name}"
+                if analysis.comparison_item else "Comparable items"
+            ),
+            value=(
+                baseline_label
+                +
+                f"**{analysis.peer_win_rate:.1%}**. This item is "
+                f"**{abs(delta):.1%} {direction}** {comparison_scope}"
+            ),
+            inline=False,
+        )
+    embed.add_field(
+        name=field_name("How to read this"),
+        value=(
+            "This is correlation, not proof that buying the item causes wins. "
+            "Costly late-game items can look stronger because losing teams may never finish them."
+        ),
+        inline=False,
+    )
+    if analysis.item.icon_url:
+        embed.set_thumbnail(url=analysis.item.icon_url)
+    finish_embed(
+        embed,
+        "Deadlock item analysis",
+        source="Deadlock API",
+        context=(
+            f"{analysis.patch.title} · since "
+            f"{datetime.fromtimestamp(analysis.patch.published_at, UTC):%Y-%m-%d}"
+        ),
+    )
+    return embed
 
 
 def build_live_match_embed(

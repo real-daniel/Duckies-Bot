@@ -7,7 +7,9 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from duckies_bot.features.deadlock import DeadlockService
+from duckies_bot.features.deadlock.analytics import parse_item_question, wilson_interval
 from duckies_bot.features.deadlock.formatter import (
+    build_item_analysis_embed,
     build_live_match_embed,
     build_player_hero_embed,
     build_player_lookup_embed,
@@ -23,6 +25,8 @@ from duckies_bot.features.deadlock.models import (
     HeroRecord,
     HeroSummary,
     ItemSummary,
+    ItemAnalysis,
+    ItemStats,
     LiveChatMessage,
     LiveKillEvent,
     LiveMatchSnapshot,
@@ -31,11 +35,13 @@ from duckies_bot.features.deadlock.models import (
     PlayerHistory,
     PlayerLookup,
     PlayerRank,
+    PatchSummary,
     RankAsset,
     ScoutedPlayer,
     StatueBuff,
     SteamProfile,
 )
+from duckies_bot.features.item_questions import InterpretedItemQuestion
 from duckies_bot.providers.deadlock import (
     DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
     DeadlockAPIError,
@@ -386,6 +392,66 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
                 ("hero_ids", "69"),
                 ("match_mode", "ranked"),
             ],
+        )
+
+    async def test_parses_current_patch_item_analytics(self) -> None:
+        session = FakeSession(
+            [
+                FakeResponse(
+                    [
+                        {
+                            "source": "steam",
+                            "title": "Ranked - Beta Season 2",
+                            "pub_date": "2026-11-05T19:58:14Z",
+                            "link": "https://example.test/season",
+                        },
+                        {
+                            "source": "steam",
+                            "title": "Minor Update - 11-04-2026",
+                            "pub_date": "2026-11-05T05:02:30Z",
+                            "link": "https://example.test/patch",
+                        },
+                    ]
+                ),
+                FakeResponse(
+                    [
+                        {
+                            "item_id": 42,
+                            "wins": 60,
+                            "losses": 40,
+                            "matches": 100,
+                            "players": 88,
+                            "avg_buy_time_s": 900.5,
+                            "avg_sell_time_s": 1800.0,
+                        }
+                    ]
+                ),
+            ]
+        )
+        client = DeadlockClient(base_url="https://example.test", session=session)  # type: ignore[arg-type]
+
+        latest = await client.get_latest_gameplay_patch()
+        stats = await client.get_item_stats(
+            minimum_timestamp=latest.published_at,
+            minimum_badge=81,
+            maximum_badge=96,
+        )
+
+        self.assertEqual(latest.title, "Minor Update - 11-04-2026")
+        self.assertEqual(latest.link, "https://example.test/patch")
+        self.assertEqual(stats[0].win_rate, 0.6)
+        self.assertEqual(stats[0].average_buy_time_seconds, 900.5)
+        self.assertEqual(
+            session.requests[1][1],
+            {
+                "game_mode": "normal",
+                "match_mode": "ranked",
+                "min_unix_timestamp": str(latest.published_at),
+                "min_matches": "1",
+                "corrupted_items": "exclude",
+                "min_average_badge": "81",
+                "max_average_badge": "96",
+            },
         )
 
     async def test_fetches_and_searches_steam_profiles(self) -> None:
@@ -745,6 +811,7 @@ class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
 
     def test_chat_commands_are_registered(self) -> None:
         command_names = {command.name for command in DeadlockCog.deadlock.commands}
+        self.assertIn("ask", command_names)
         self.assertIn("player", command_names)
         self.assertIn("chat", command_names)
         self.assertIn("chat-stop", command_names)
@@ -762,7 +829,273 @@ class DeadlockLiveClientTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("screenshot", parameter_names)
 
 
+class DeadlockItemAnalysisTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.items = (
+            ItemSummary(1, "Glass Cannon", "https://example.test/1.webp", "weapon", 4, 6200, True),
+            ItemSummary(2, "Lucky Shot", None, "weapon", 4, 6200, True),
+            ItemSummary(3, "Ricochet", None, "weapon", 4, 6200, True),
+            ItemSummary(4, "Silencer", None, "weapon", 4, 6200, True),
+            ItemSummary(5, "Decay", None, "spirit", 2, 1600, True),
+        )
+        self.ranks = tuple(
+            RankAsset(tier, name)
+            for tier, name in enumerate(
+                (
+                    "Obscurus",
+                    "Initiate",
+                    "Seeker",
+                    "Acolyte",
+                    "Sentinel",
+                    "Mystic",
+                    "Ritualist",
+                    "Emissary",
+                    "Oracle",
+                    "Phantom",
+                    "Ascendant",
+                    "Eternus",
+                )
+            )
+        )
+
+    def test_parses_item_and_rank_ranges_from_natural_language(self) -> None:
+        parsed = parse_item_question(
+            "How good is Glass Cannon in Oracle V to Phantom II?",
+            self.items,
+            self.ranks,
+        )
+
+        self.assertEqual(parsed.item.name, "Glass Cannon")
+        self.assertEqual(parsed.minimum_badge, 85)
+        self.assertEqual(parsed.maximum_badge, 92)
+        self.assertEqual(parsed.rank_label, "Oracle V–Phantom II")
+
+    def test_parses_discord_style_questions_with_typos_and_missing_punctuation(self) -> None:
+        cases = (
+            ("glass cannon oracle phantom", 81, 96, "Oracle–Phantom"),
+            ("how good glass canon oracle to phantom", 81, 96, "Oracle–Phantom"),
+            ("HOW GOOD IS GLASS CANNON ORACLE-PHANTOM", 81, 96, "Oracle–Phantom"),
+            ("is glass cannon gud orcale thru phatom", 81, 96, "Oracle–Phantom"),
+            ("glass cannon oracle 5 phantom 2", 85, 92, "Oracle V–Phantom II"),
+            ("glass cannon oracle5 phantom2", 85, 92, "Oracle V–Phantom II"),
+            ("glass cannon??? oracle...phantom!!!", 81, 96, "Oracle–Phantom"),
+        )
+
+        for question, minimum, maximum, label in cases:
+            with self.subTest(question=question):
+                parsed = parse_item_question(question, self.items, self.ranks)
+                self.assertEqual(parsed.item.name, "Glass Cannon")
+                self.assertEqual(parsed.minimum_badge, minimum)
+                self.assertEqual(parsed.maximum_badge, maximum)
+                self.assertEqual(parsed.rank_label, label)
+
+        typo = parse_item_question("is decya gud in phatom", self.items, self.ranks)
+        self.assertEqual(typo.item.name, "Decay")
+        self.assertEqual(typo.rank_label, "Phantom")
+
+        rank_typo = parse_item_question("decay ritualst", self.items, self.ranks)
+        self.assertEqual(rank_typo.rank_label, "Ritualist")
+
+    def test_question_without_rank_uses_all_ranks(self) -> None:
+        parsed = parse_item_question("Is Glass Cannon good?", self.items, self.ranks)
+
+        self.assertIsNone(parsed.minimum_badge)
+        self.assertIsNone(parsed.maximum_badge)
+        self.assertEqual(parsed.rank_label, "all ranks")
+
+    def test_parses_hero_item_comparisons_without_purchase_order(self) -> None:
+        heroes = (
+            HeroSummary(1, "Haze", None),
+            HeroSummary(2, "Lady Geist", None),
+        )
+        cases = (
+            "glass cannon on haze vs decay",
+            "how gud is glass canon for hze compared to decay???",
+            "glass cannon haze instead of decay",
+        )
+        for question in cases:
+            with self.subTest(question=question):
+                parsed = parse_item_question(question, self.items, self.ranks, heroes)
+                self.assertEqual(parsed.item.name, "Glass Cannon")
+                self.assertEqual(parsed.comparison_item.name, "Decay")
+                self.assertEqual(parsed.hero.name, "Haze")
+
+    def test_parses_realistic_discord_hero_comparison_errors(self) -> None:
+        heroes = (
+            HeroSummary(1, "Haze", None),
+            HeroSummary(2, "Lady Geist", None),
+        )
+        cases = (
+            ("glasscannon haze v decay", "all ranks"),
+            ("is glass cannon on haze better than decay", "all ranks"),
+            ("how gud glass canon on hze compard to decya", "all ranks"),
+            ("glass cannon@haze vs decay no punctuation lol", "all ranks"),
+            ("GLASS CANNON HAZE VERSUS DECAY!!!", "all ranks"),
+            ("glass cannon for haze compared 2 decay oracle", "Oracle"),
+            ("glass canon hze against decy phatom", "Phantom"),
+            ("glasscannon on haze instead of decay?", "all ranks"),
+            ("yo is glass cannon good haze vs decay", "all ranks"),
+        )
+        for question, rank_label in cases:
+            with self.subTest(question=question):
+                parsed = parse_item_question(question, self.items, self.ranks, heroes)
+                self.assertEqual(parsed.item.name, "Glass Cannon")
+                self.assertEqual(parsed.comparison_item.name, "Decay")
+                self.assertEqual(parsed.hero.name, "Haze")
+                self.assertEqual(parsed.rank_label, rank_label)
+
+    def test_rank_word_inside_item_name_is_not_used_as_rank_filter(self) -> None:
+        items = self.items + (
+            ItemSummary(6, "Phantom Strike", None, "spirit", 4, 6200, True),
+        )
+
+        parsed = parse_item_question("Is Phantom Strike good?", items, self.ranks)
+
+        self.assertEqual(parsed.item.name, "Phantom Strike")
+        self.assertIsNone(parsed.minimum_badge)
+        self.assertEqual(parsed.rank_label, "all ranks")
+
+    def test_rejects_question_without_known_item(self) -> None:
+        with self.assertRaisesRegex(ValueError, "could not find an item"):
+            parse_item_question("Is Made Up Thing good in Oracle?", self.items, self.ranks)
+
+    def test_rejects_ambiguous_item_typo_instead_of_guessing(self) -> None:
+        items = self.items + (
+            ItemSummary(7, "Glas Cannon", None, "weapon", 4, 6200, True),
+        )
+
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            parse_item_question("is gass cannon good", items, self.ranks)
+
+    def test_rejects_incomplete_discord_comparison(self) -> None:
+        with self.assertRaisesRegex(ValueError, "both sides"):
+            parse_item_question("glass cannon on haze vs", self.items, self.ranks)
+
+    async def test_service_builds_and_caches_current_patch_analysis(self) -> None:
+        patch_summary = PatchSummary("Minor Update - 11-04-2026", 1_762_317_750, "https://example.test/patch")
+        stats = (
+            ItemStats(1, 72, 48, 120, 110, 1500.0, 0.0),
+            ItemStats(2, 50, 50, 100, 90, 1450.0, 0.0),
+            ItemStats(3, 52, 48, 100, 91, 1550.0, 0.0),
+            ItemStats(4, 51, 49, 100, 89, 1600.0, 0.0),
+        )
+        client = SimpleNamespace(
+            get_items=AsyncMock(return_value=self.items),
+            get_rank_assets=AsyncMock(return_value=self.ranks),
+            get_latest_gameplay_patch=AsyncMock(return_value=patch_summary),
+            get_item_stats=AsyncMock(return_value=stats),
+        )
+        service = DeadlockService(client)  # type: ignore[arg-type]
+
+        result = await service.answer_item_question(
+            "How good is Glass Cannon in Oracle to Phantom?"
+        )
+        again = await service.answer_item_question(
+            "Is Glass Cannon good from Oracle through Phantom?"
+        )
+
+        self.assertEqual(result.verdict, "Strong in this range")
+        self.assertAlmostEqual(result.peer_win_rate or 0, 0.51)
+        self.assertEqual(result.rank_label, "Oracle–Phantom")
+        self.assertEqual(again, result)
+        client.get_item_stats.assert_awaited_once()
+        client.get_latest_gameplay_patch.assert_awaited_once()
+
+    async def test_service_filters_deadlock_comparison_by_hero(self) -> None:
+        patch_summary = PatchSummary("Patch", 1_762_317_750, "https://example.test/patch")
+        stats = (
+            ItemStats(1, 60, 40, 100, 90, 1500.0, 0.0),
+            ItemStats(5, 45, 55, 100, 88, 1450.0, 0.0),
+        )
+        heroes = (HeroSummary(7, "Haze", None),)
+        client = SimpleNamespace(
+            get_items=AsyncMock(return_value=self.items),
+            get_heroes=AsyncMock(return_value=heroes),
+            get_rank_assets=AsyncMock(return_value=self.ranks),
+            get_latest_gameplay_patch=AsyncMock(return_value=patch_summary),
+            get_item_stats=AsyncMock(return_value=stats),
+        )
+
+        interpreter = SimpleNamespace(
+            interpret=AsyncMock(
+                return_value=InterpretedItemQuestion(
+                    game="deadlock",
+                    intent="compare_items",
+                    primary_item="Glass Cannon",
+                    comparison_item="Decay",
+                    character="Haze",
+                    item_position=None,
+                    minimum_rank="Oracle",
+                    maximum_rank=None,
+                    needs_clarification=False,
+                    clarification=None,
+                    confidence="high",
+                )
+            )
+        )
+        result = await DeadlockService(
+            client, question_interpreter=interpreter
+        ).answer_item_question(
+            "would glass cannon be a better pickup than decay for hze around oracle"
+        )
+
+        self.assertEqual(result.hero.name, "Haze")
+        self.assertEqual(result.comparison_item.name, "Decay")
+        self.assertEqual(result.comparison_stats, stats[1])
+        self.assertAlmostEqual(result.win_rate_delta or 0, 0.15)
+        client.get_item_stats.assert_awaited_once_with(
+            minimum_timestamp=patch_summary.published_at,
+            minimum_badge=81,
+            maximum_badge=86,
+            hero_id=7,
+        )
+        interpreter.interpret.assert_awaited_once_with(
+            "would glass cannon be a better pickup than decay for hze around oracle",
+            game="deadlock",
+        )
+
+    def test_wilson_interval_contains_observed_rate(self) -> None:
+        low, high = wilson_interval(60, 100)
+        self.assertLess(low, 0.6)
+        self.assertGreater(high, 0.6)
+
+
 class DeadlockFormatterTests(unittest.TestCase):
+    def test_item_analysis_embed_explains_sample_and_comparison(self) -> None:
+        analysis = ItemAnalysis(
+            item=self._analysis_item(),
+            stats=ItemStats(1, 72, 48, 120, 110, 1500.0, 0.0),
+            patch=PatchSummary("Minor Update - 11-04-2026", 1_762_317_750, "https://example.test/patch"),
+            rank_label="Oracle–Phantom",
+            minimum_badge=81,
+            maximum_badge=96,
+            peer_win_rate=0.51,
+            peer_count=3,
+            confidence_low=0.51,
+            confidence_high=0.68,
+            verdict="Strong in this range",
+        )
+
+        embed = build_item_analysis_embed(analysis)
+
+        self.assertIn("Strong", embed.title or "")
+        self.assertIn("120 purchases", embed.fields[0].value)
+        self.assertIn("9.0% above", embed.fields[1].value)
+        self.assertIn("correlation", embed.fields[2].value)
+        self.assertEqual(embed.url, "https://example.test/patch")
+
+    @staticmethod
+    def _analysis_item() -> ItemSummary:
+        return ItemSummary(
+            1,
+            "Glass Cannon",
+            "https://example.test/glass.webp",
+            "weapon",
+            4,
+            6200,
+            True,
+        )
+
     def test_live_match_embed_lists_players_by_team(self) -> None:
         snapshot = LiveMatchSnapshot(
             match_id=98832895,

@@ -11,6 +11,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.tarkov_api_url, "https://json.tarkov.dev")
         self.assertEqual(settings.deadlock_api_url, "https://api.deadlock-api.com")
         self.assertIsNone(settings.riot_api_key)
+        self.assertIsNone(settings.openai_api_key)
+        self.assertEqual(settings.openai_question_model, "gpt-6-luna")
         self.assertEqual(settings.deadlock_live_events_url, "http://127.0.0.1:3000")
         self.assertEqual(
             settings.deadlock_scout_template_path,
@@ -34,6 +36,8 @@ class SettingsTests(unittest.TestCase):
             Settings(discord_token="token", deadlock_api_url=" ")
         with self.assertRaises(ValueError):
             Settings(discord_token="token", deadlock_live_events_url=" ")
+        with self.assertRaises(ValueError):
+            Settings(discord_token="token", openai_question_model=" ")
         with self.assertRaises(ValueError):
             Settings(discord_token="token", deadlock_scout_template_path=" ")
         with self.assertRaises(ValueError):

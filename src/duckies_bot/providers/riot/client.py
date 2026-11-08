@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import quote
@@ -9,7 +10,11 @@ from urllib.parse import quote
 import aiohttp
 
 from ...features.league.models import (
+    LeagueChampion,
+    LeagueItem,
+    LeagueLadderEntry,
     LeagueMatch,
+    LeagueMatchTimeline,
     MatchParticipant,
     RankedEntry,
     RiotAccount,
@@ -144,17 +149,58 @@ class RiotClient:
         platform: str,
         *,
         count: int = 10,
+        queue: int | None = None,
     ) -> tuple[str, ...]:
         if not 1 <= count <= 100:
             raise ValueError("count must be between 1 and 100")
+        params = {"start": "0", "count": str(count)}
+        if queue is not None:
+            params["queue"] = str(queue)
         document = await self._riot_json(
             regional_route(platform),
             f"/lol/match/v5/matches/by-puuid/{_path(puuid)}/ids",
-            params={"start": "0", "count": str(count)},
+            params=params,
         )
         if not isinstance(document, list):
             raise InvalidRiotResponseError()
         return tuple(item for item in document if isinstance(item, str) and item)
+
+    async def get_league_entries(
+        self,
+        platform: str,
+        tier: str,
+        division: str,
+        *,
+        page: int = 1,
+    ) -> tuple[LeagueLadderEntry, ...]:
+        tier = tier.strip().upper()
+        division = division.strip().upper()
+        if tier not in {
+            "IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD",
+            "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER",
+        }:
+            raise ValueError("Unsupported League tier")
+        if division not in {"I", "II", "III", "IV"}:
+            raise ValueError("Unsupported League division")
+        if page <= 0:
+            raise ValueError("page must be positive")
+        document = await self._riot_json(
+            _platform(platform),
+            f"/lol/league-exp/v4/entries/RANKED_SOLO_5x5/{tier}/{division}",
+            params={"page": str(page)},
+        )
+        if not isinstance(document, list):
+            raise InvalidRiotResponseError()
+        entries: list[LeagueLadderEntry] = []
+        for raw in document:
+            if not isinstance(raw, Mapping):
+                continue
+            puuid = _text(raw.get("puuid"))
+            returned_tier = _text(raw.get("tier"))
+            rank = _text(raw.get("rank"))
+            if puuid and returned_tier and rank:
+                entries.append(LeagueLadderEntry(puuid, returned_tier.upper(), rank.upper()))
+        return tuple(entries)
 
     async def get_match(self, match_id: str, platform: str) -> LeagueMatch:
         document = await self._riot_json(
@@ -166,30 +212,155 @@ class RiotClient:
             raise InvalidRiotResponseError()
         return _parse_match(document, fallback_match_id=match_id)
 
+    async def get_match_timeline(
+        self, match_id: str, platform: str
+    ) -> LeagueMatchTimeline:
+        document = await self._riot_json(
+            regional_route(platform),
+            f"/lol/match/v5/matches/{_path(match_id)}/timeline",
+            not_found="That match timeline is no longer available from Riot.",
+        )
+        if not isinstance(document, Mapping):
+            raise InvalidRiotResponseError()
+        metadata = document.get("metadata")
+        info = document.get("info")
+        frames = info.get("frames") if isinstance(info, Mapping) else None
+        if not isinstance(frames, list):
+            raise InvalidRiotResponseError()
+        purchases: dict[int, list[int]] = {}
+        for frame in frames:
+            events = frame.get("events") if isinstance(frame, Mapping) else None
+            if not isinstance(events, list):
+                continue
+            for event in events:
+                if not isinstance(event, Mapping) or event.get("type") != "ITEM_PURCHASED":
+                    continue
+                participant_id = _integer(event.get("participantId"))
+                item_id = _integer(event.get("itemId"))
+                if participant_id > 0 and item_id > 0:
+                    purchases.setdefault(participant_id, []).append(item_id)
+        returned_id = (
+            _text(metadata.get("matchId")) if isinstance(metadata, Mapping) else None
+        )
+        return LeagueMatchTimeline(
+            returned_id or match_id,
+            {key: tuple(value) for key, value in purchases.items()},
+        )
+
     async def get_data_dragon_catalog(self) -> tuple[str | None, dict[int, str]]:
         """Return the current Data Dragon version and item names without using the API key."""
+        version, items = await self.get_data_dragon_items()
+        return version, {item.item_id: item.name for item in items}
+
+    async def get_data_dragon_items(self) -> tuple[str | None, tuple[LeagueItem, ...]]:
+        """Return current purchasable Summoner's Rift items from Data Dragon."""
         try:
             versions = await self._public_json(
                 "https://ddragon.leagueoflegends.com/api/versions.json"
             )
             if not isinstance(versions, list) or not versions or not isinstance(versions[0], str):
-                return None, {}
+                return None, ()
             version = versions[0]
             document = await self._public_json(
                 f"https://ddragon.leagueoflegends.com/cdn/{_path(version)}/data/en_US/item.json"
             )
             if not isinstance(document, Mapping) or not isinstance(document.get("data"), Mapping):
-                return version, {}
-            names: dict[int, str] = {}
+                return version, ()
+            items: list[LeagueItem] = []
             for raw_id, raw in document["data"].items():
                 if not isinstance(raw_id, str) or not isinstance(raw, Mapping):
                     continue
                 name = _text(raw.get("name"))
-                if raw_id.isdigit() and name is not None:
-                    names[int(raw_id)] = name
-            return version, names
+                gold = raw.get("gold")
+                maps = raw.get("maps")
+                image = raw.get("image")
+                if (
+                    not raw_id.isdigit()
+                    or int(raw_id) >= 10_000
+                    or name is None
+                    or not isinstance(gold, Mapping)
+                    or gold.get("purchasable") is not True
+                    or not isinstance(maps, Mapping)
+                    or maps.get("11") is not True
+                ):
+                    continue
+                image_name = _text(image.get("full")) if isinstance(image, Mapping) else None
+                tags = raw.get("tags")
+                into = raw.get("into")
+                items.append(
+                    LeagueItem(
+                        item_id=int(raw_id),
+                        name=name,
+                        icon_url=(
+                            "https://ddragon.leagueoflegends.com/cdn/"
+                            f"{_path(version)}/img/item/{image_name}"
+                            if image_name
+                            else ""
+                        ),
+                        total_cost=_integer(gold.get("total")),
+                        tags=tuple(value for value in tags if isinstance(value, str))
+                        if isinstance(tags, list)
+                        else (),
+                        builds_into=tuple(
+                            int(value)
+                            for value in into
+                            if isinstance(value, str) and value.isdigit()
+                        )
+                        if isinstance(into, list)
+                        else (),
+                    )
+                )
+            name_counts = Counter(item.name.casefold() for item in items)
+            return version, tuple(
+                item for item in items if name_counts[item.name.casefold()] == 1
+            )
         except RiotAPIError:
-            return None, {}
+            return None, ()
+
+    async def get_data_dragon_champions(
+        self, version: str | None = None
+    ) -> tuple[str | None, tuple[LeagueChampion, ...]]:
+        """Return the current champion catalog without using the Riot API key."""
+        try:
+            if version is None:
+                versions = await self._public_json(
+                    "https://ddragon.leagueoflegends.com/api/versions.json"
+                )
+                if (
+                    not isinstance(versions, list)
+                    or not versions
+                    or not isinstance(versions[0], str)
+                ):
+                    return None, ()
+                version = versions[0]
+            document = await self._public_json(
+                f"https://ddragon.leagueoflegends.com/cdn/{_path(version)}/data/en_US/champion.json"
+            )
+            data = document.get("data") if isinstance(document, Mapping) else None
+            if not isinstance(data, Mapping):
+                return version, ()
+            champions: list[LeagueChampion] = []
+            for raw in data.values():
+                if not isinstance(raw, Mapping):
+                    continue
+                name = _text(raw.get("name"))
+                key = _text(raw.get("id"))
+                champion_id = _text(raw.get("key"))
+                image = raw.get("image")
+                image_name = _text(image.get("full")) if isinstance(image, Mapping) else None
+                if name and key and champion_id and champion_id.isdigit():
+                    icon_url = (
+                        "https://ddragon.leagueoflegends.com/cdn/"
+                        f"{_path(version)}/img/champion/{image_name}"
+                        if image_name
+                        else ""
+                    )
+                    champions.append(
+                        LeagueChampion(int(champion_id), name, key, icon_url)
+                    )
+            return version, tuple(champions)
+        except RiotAPIError:
+            return version, ()
 
     async def _riot_json(
         self,
@@ -348,6 +519,7 @@ def _parse_participant(raw: Mapping[str, Any]) -> MatchParticipant:
             for item_id in (_integer(raw.get(f"item{index}")),)
             if item_id > 0
         ),
+        participant_id=_integer(raw.get("participantId")),
     )
 
 

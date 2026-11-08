@@ -17,6 +17,7 @@ from .features.tarkov.service import TarkovService
 from .features.tarkov.quest_log import QuestLogService
 from .features.tarkov.profit import ProfitService
 from .providers.ocr import RapidOCRProvider
+from .providers.question_interpreter import OpenAIQuestionInterpreter
 from .providers.riot import RiotClient
 from .providers.deadlock import (
     DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
@@ -52,7 +53,24 @@ class DuckiesBot(commands.Bot):
             api_key=settings.riot_api_key,
             timeout_seconds=settings.http_timeout_seconds,
         )
-        self.league_service = LeagueService(self.riot_client)
+        self.question_interpreter = (
+            OpenAIQuestionInterpreter(
+                settings.openai_api_key,
+                model=settings.openai_question_model,
+                timeout_seconds=min(settings.http_timeout_seconds, 8.0),
+            )
+            if settings.openai_api_key
+            else None
+        )
+        if self.question_interpreter is not None:
+            LOGGER.info(
+                "OpenAI question interpretation enabled with %s",
+                settings.openai_question_model,
+            )
+        self.league_service = LeagueService(
+            self.riot_client,
+            question_interpreter=self.question_interpreter,
+        )
         self.deadlock_live_client = DeadlockLiveClient(
             base_url=settings.deadlock_live_events_url,
             timeout_seconds=max(
@@ -65,6 +83,7 @@ class DuckiesBot(commands.Bot):
             self.deadlock_client,
             self.deadlock_live_client,
             self.deadlock_broadcast_urls,
+            question_interpreter=self.question_interpreter,
         )
         self.ocr_provider = RapidOCRProvider()
         self.deadlock_screenshot_reader = DeadlockScreenshotReader(self.ocr_provider)
@@ -126,6 +145,8 @@ class DuckiesBot(commands.Bot):
         await self.deadlock_client.close()
         await self.deadlock_live_client.close()
         await self.riot_client.close()
+        if self.question_interpreter is not None:
+            await self.question_interpreter.close()
         await super().close()
 
     async def on_ready(self) -> None:

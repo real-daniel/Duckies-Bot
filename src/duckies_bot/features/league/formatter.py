@@ -8,7 +8,106 @@ from collections.abc import Mapping
 import discord
 
 from ...presentation import field_name, finish_embed, make_embed
-from .models import LeagueMatch, LeaguePlayerLookup, MatchParticipant, RankedEntry
+from .models import (
+    LeagueItemAnalysis,
+    LeagueMatch,
+    LeaguePlayerLookup,
+    MatchParticipant,
+    RankedEntry,
+)
+
+
+def build_item_analysis_embed(analysis: LeagueItemAnalysis) -> discord.Embed:
+    stats = analysis.stats
+    win_rate = stats.win_rate or 0.0
+    delta = analysis.win_rate_delta
+    tone = "info"
+    if "Strong" in analysis.verdict or "Above" in analysis.verdict:
+        tone = "success"
+    elif "Weak" in analysis.verdict or "Below" in analysis.verdict:
+        tone = "danger"
+    elif "little" in analysis.verdict or "small" in analysis.verdict:
+        tone = "warning"
+    champion_text = f" on **{analysis.champion.name}**" if analysis.champion else ""
+    position_text = (
+        f" as the **{_ordinal(analysis.item_position)} completed core item**"
+        if analysis.item_position else ""
+    )
+    comparison_text = (
+        f", compared with **{analysis.comparison_item.name}**"
+        if analysis.comparison_item else ""
+    )
+    embed = make_embed(
+        f"{analysis.item.name} — {analysis.verdict}",
+        (
+            f"In a **{analysis.rank_label}** ranked sample from **{analysis.platform}**, "
+            f"**{analysis.item.name}**{position_text}{champion_text} won "
+            f"**{win_rate:.1%}** of games{comparison_text}."
+        ),
+        tone=tone,
+    )
+    embed.add_field(
+        name=field_name("Observed performance"),
+        value=(
+            f"**{stats.wins:,}W–{stats.losses:,}L** · {stats.matches:,} item observations\n"
+            f"95% confidence interval **{analysis.confidence_low:.1%}–"
+            f"{analysis.confidence_high:.1%}**\n"
+            f"Scanned **{analysis.games_scanned:,} games** and "
+            f"**{analysis.players_scanned:,} player builds**"
+        ),
+        inline=False,
+    )
+    if analysis.peer_win_rate is not None and delta is not None:
+        direction = "above" if delta >= 0 else "below"
+        baseline_label = (
+            f"{analysis.comparison_item.name}'s win rate in the same slot is "
+            if analysis.comparison_item
+            else "The median for similarly priced items sharing its tags is "
+        )
+        comparison_scope = (
+            "that item."
+            if analysis.comparison_item
+            else f"that sampled baseline across {analysis.peer_count} items."
+        )
+        embed.add_field(
+            name=field_name(
+                f"Compared with {analysis.comparison_item.name}"
+                if analysis.comparison_item else "Comparable items"
+            ),
+            value=(
+                baseline_label
+                +
+                f"**{analysis.peer_win_rate:.1%}**. This item is "
+                f"**{abs(delta):.1%} {direction}** {comparison_scope}"
+            ),
+            inline=False,
+        )
+    embed.add_field(
+        name=field_name("Important limitation"),
+        value=(
+            "This is a bounded Riot match sample, not a census of the ladder. Item-order "
+            "win rates have survivorship and game-length bias, so this is correlation—not "
+            "proof that buying the item causes wins."
+        ),
+        inline=False,
+    )
+    if analysis.item.icon_url:
+        embed.set_thumbnail(url=analysis.item.icon_url)
+    finish_embed(
+        embed,
+        "League item analysis",
+        source="Riot Games API",
+        context=f"Ranked Solo/Duo sample · patch {analysis.data_dragon_version}",
+    )
+    return embed
+
+
+def _ordinal(value: int) -> str:
+    if 10 <= value % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(value % 10, "th")
+    return f"{value}{suffix}"
 
 
 _QUEUE_NAMES = {

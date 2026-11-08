@@ -9,11 +9,24 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
 
+from .analytics import (
+    comparable_win_rate,
+    item_verdict,
+    parse_item_question,
+    wilson_interval,
+)
+from ..item_questions import (
+    ItemQuestionInterpreter,
+    QuestionInterpreterUnavailableError,
+    canonical_item_question,
+)
 from .models import (
     HeroExperience,
     HeroRecord,
     HeroSummary,
     ItemSummary,
+    ItemAnalysis,
+    ItemStats,
     LiveChatMessage,
     LiveMatchSnapshot,
     MatchScout,
@@ -21,6 +34,7 @@ from .models import (
     PlayerLookup,
     PlayerRank,
     RankAsset,
+    PatchSummary,
     ScoutedPlayer,
     SteamProfile,
 )
@@ -51,10 +65,13 @@ class DeadlockService:
         client: DeadlockClient,
         live_client: DeadlockLiveClient | None = None,
         broadcast_urls: BroadcastURLRepository | None = None,
+        *,
+        question_interpreter: ItemQuestionInterpreter | None = None,
     ) -> None:
         self.client = client
         self.live_client = live_client
         self.broadcast_urls = broadcast_urls
+        self.question_interpreter = question_interpreter
         self._profile_cache: dict[tuple[int, str | None, int | None], _CachedProfile] = {}
         self._experience_cache: dict[
             tuple[int, int, str | None, int | None], _CachedExperience
@@ -73,6 +90,10 @@ class DeadlockService:
         self._item_cache_lock = asyncio.Lock()
         self._item_icon_cache: dict[int, _CachedAssetIcon] = {}
         self._item_icon_locks: dict[int, asyncio.Lock] = {}
+        self._item_stats_cache: dict[
+            tuple[int, int | None, int | None, int | None], _CachedItemStats
+        ] = {}
+        self._patch_cache: _CachedPatch | None = None
         self._asset_icon_limit = asyncio.Semaphore(8)
         self._rank_assets: tuple[RankAsset, ...] = ()
         self._rank_assets_expires_at = 0.0
@@ -95,6 +116,87 @@ class DeadlockService:
     ) -> tuple[SteamProfile, ...]:
         """Find Steam profiles indexed by the Deadlock API."""
         return await self.client.search_steam_profiles(query, limit=limit)
+
+    async def answer_item_question(self, question: str) -> ItemAnalysis:
+        """Answer a conversational item-strength question with current-patch data."""
+        items, ranks, patch, heroes = await asyncio.gather(
+            self._get_item_catalog(),
+            self._get_rank_assets(),
+            self._get_latest_patch(),
+            self._get_hero_catalog(),
+        )
+        if not items or not ranks:
+            raise DeadlockAPIError(
+                "The current Deadlock item or rank catalog is unavailable. Try again shortly."
+            )
+        interpreted_question = question
+        if self.question_interpreter is not None:
+            try:
+                interpretation = await self.question_interpreter.interpret(
+                    question, game="deadlock"
+                )
+            except QuestionInterpreterUnavailableError:
+                LOGGER.warning(
+                    "OpenAI question interpretation unavailable; using Deadlock parser",
+                    exc_info=True,
+                )
+            else:
+                interpreted_question = canonical_item_question(
+                    interpretation, expected_game="deadlock"
+                )
+        parsed = parse_item_question(interpreted_question, items, ranks, heroes)
+        stats = await self._get_item_stats(
+            patch,
+            parsed.minimum_badge,
+            parsed.maximum_badge,
+            parsed.hero.hero_id if parsed.hero else None,
+        )
+        target = next((row for row in stats if row.item_id == parsed.item.item_id), None)
+        if target is None:
+            raise ValueError(
+                f"There are no recorded {parsed.item.name} purchases for {parsed.rank_label} "
+                "on the current patch yet."
+            )
+        item_catalog = {item.item_id: item for item in items}
+        comparison_stats = next(
+            (
+                row
+                for row in stats
+                if parsed.comparison_item is not None
+                and row.item_id == parsed.comparison_item.item_id
+            ),
+            None,
+        )
+        if parsed.comparison_item is not None and comparison_stats is None:
+            raise ValueError(
+                f"There are no recorded {parsed.comparison_item.name} purchases for this filter."
+            )
+        if comparison_stats is not None:
+            peer_rate, peer_count = comparison_stats.win_rate, 1
+        else:
+            peer_rate, peer_count = comparable_win_rate(
+                target, parsed.item, stats, item_catalog
+            )
+        low, high = wilson_interval(target.wins, target.matches)
+        verdict = item_verdict(target, peer_rate)
+        if comparison_stats is not None and comparison_stats.matches < 20:
+            verdict = "Too little comparison data"
+        return ItemAnalysis(
+            item=parsed.item,
+            stats=target,
+            patch=patch,
+            rank_label=parsed.rank_label,
+            minimum_badge=parsed.minimum_badge,
+            maximum_badge=parsed.maximum_badge,
+            peer_win_rate=peer_rate,
+            peer_count=peer_count,
+            confidence_low=low,
+            confidence_high=high,
+            verdict=verdict,
+            hero=parsed.hero,
+            comparison_item=parsed.comparison_item,
+            comparison_stats=comparison_stats,
+        )
 
     async def player_lookup(
         self,
@@ -587,7 +689,6 @@ class DeadlockService:
     ]:
         now = time.monotonic()
         account_ids = {account_id for account_id, _ in pairs}
-
         def total_key(account_id: int) -> tuple[int, str | None, int | None]:
             return account_id, match_mode, minimum_timestamp
 
@@ -721,6 +822,25 @@ class DeadlockService:
         requested = set(item_ids)
         if not requested:
             return {}
+        await self._ensure_item_catalog()
+        return {
+            item_id: self._item_cache[item_id]
+            for item_id in requested
+            if item_id in self._item_cache
+        }
+
+    async def _get_hero_catalog(self) -> tuple[HeroSummary, ...]:
+        if self._hero_cache_expires_at <= time.monotonic():
+            if not hasattr(self.client, "get_heroes"):
+                return ()
+            await self._get_heroes((-1,))
+        return tuple(self._hero_cache.values())
+
+    async def _get_item_catalog(self) -> tuple[ItemSummary, ...]:
+        await self._ensure_item_catalog()
+        return tuple(self._item_cache.values())
+
+    async def _ensure_item_catalog(self) -> None:
         now = time.monotonic()
         if self._item_cache_expires_at <= now:
             async with self._item_cache_lock:
@@ -735,15 +855,38 @@ class DeadlockService:
                             item.item_id: item
                             for item in items
                             if item.shopable
-                            and item.icon_url is not None
                             and item.slot_type in {"weapon", "vitality", "spirit"}
                         }
                         self._item_cache_expires_at = now + 24 * 60 * 60
-        return {
-            item_id: self._item_cache[item_id]
-            for item_id in requested
-            if item_id in self._item_cache
-        }
+
+    async def _get_latest_patch(self) -> PatchSummary:
+        now = time.monotonic()
+        if self._patch_cache is not None and self._patch_cache.expires_at > now:
+            return self._patch_cache.patch
+        patch = await self.client.get_latest_gameplay_patch()
+        self._patch_cache = _CachedPatch(now + 15 * 60, patch)
+        return patch
+
+    async def _get_item_stats(
+        self,
+        patch: PatchSummary,
+        minimum_badge: int | None,
+        maximum_badge: int | None,
+        hero_id: int | None = None,
+    ) -> tuple[ItemStats, ...]:
+        key = (patch.published_at, minimum_badge, maximum_badge, hero_id)
+        now = time.monotonic()
+        cached = self._item_stats_cache.get(key)
+        if cached is not None and cached.expires_at > now:
+            return cached.stats
+        stats = await self.client.get_item_stats(
+            minimum_timestamp=patch.published_at,
+            minimum_badge=minimum_badge,
+            maximum_badge=maximum_badge,
+            hero_id=hero_id,
+        )
+        self._item_stats_cache[key] = _CachedItemStats(now + 15 * 60, stats)
+        return stats
 
     async def _get_item_icon(self, item: ItemSummary) -> bytes:
         return await self._get_asset_icon(
@@ -861,3 +1004,15 @@ class _CachedAssetIcon:
 class _CachedBroadcastURL:
     expires_at: float
     url: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedItemStats:
+    expires_at: float
+    stats: tuple[ItemStats, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedPatch:
+    expires_at: float
+    patch: PatchSummary

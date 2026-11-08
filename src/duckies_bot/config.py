@@ -13,6 +13,8 @@ class Settings:
     deadlock_api_url: str = "https://api.deadlock-api.com"
     deadlock_api_key: str | None = None
     riot_api_key: str | None = None
+    openai_api_key: str | None = None
+    openai_question_model: str = "gpt-6-luna"
     deadlock_live_events_url: str = "http://127.0.0.1:3000"
     deadlock_scout_template_path: str = "data/deadlock_scout_template.json"
     database_path: str = "data/duckies.sqlite3"
@@ -31,6 +33,8 @@ class Settings:
             raise ValueError("deadlock_api_url cannot be blank")
         if not self.deadlock_live_events_url.strip():
             raise ValueError("deadlock_live_events_url cannot be blank")
+        if not self.openai_question_model.strip():
+            raise ValueError("openai_question_model cannot be blank")
         if not self.deadlock_scout_template_path.strip():
             raise ValueError("deadlock_scout_template_path cannot be blank")
         if not self.database_path.strip():
@@ -79,6 +83,10 @@ def load_settings() -> Settings:
         ).strip(),
         deadlock_api_key=os.getenv("DEADLOCK_API_KEY", "").strip() or None,
         riot_api_key=os.getenv("RIOT_API_KEY", "").strip() or None,
+        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
+        openai_question_model=os.getenv(
+            "OPENAI_QUESTION_MODEL", "gpt-6-luna"
+        ).strip(),
         deadlock_live_events_url=os.getenv(
             "DEADLOCK_LIVE_EVENTS_URL", "http://127.0.0.1:3000"
         ).strip(),

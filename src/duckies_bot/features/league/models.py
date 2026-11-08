@@ -76,6 +76,7 @@ class MatchParticipant:
     placement: int | None
     subteam_id: int | None
     item_ids: tuple[int, ...]
+    participant_id: int = 0
 
     @property
     def creep_score(self) -> int:
@@ -110,4 +111,76 @@ class LeaguePlayerLookup:
     matches: tuple[LeagueMatch, ...]
     data_dragon_version: str | None = None
     item_names: Mapping[int, str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LeagueItem:
+    item_id: int
+    name: str
+    icon_url: str
+    total_cost: int
+    tags: tuple[str, ...]
+    builds_into: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LeagueChampion:
+    champion_id: int
+    name: str
+    key: str
+    icon_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class LeagueMatchTimeline:
+    match_id: str
+    purchases: Mapping[int, tuple[int, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class LeagueLadderEntry:
+    puuid: str
+    tier: str
+    division: str
+
+
+@dataclass(frozen=True, slots=True)
+class LeagueItemStats:
+    item_id: int
+    wins: int
+    losses: int
+
+    @property
+    def matches(self) -> int:
+        return self.wins + self.losses
+
+    @property
+    def win_rate(self) -> float | None:
+        return self.wins / self.matches if self.matches else None
+
+
+@dataclass(frozen=True, slots=True)
+class LeagueItemAnalysis:
+    item: LeagueItem
+    stats: LeagueItemStats
+    data_dragon_version: str
+    rank_label: str
+    platform: str
+    games_scanned: int
+    players_scanned: int
+    peer_win_rate: float | None
+    peer_count: int
+    confidence_low: float
+    confidence_high: float
+    verdict: str
+    champion: LeagueChampion | None = None
+    item_position: int | None = None
+    comparison_item: LeagueItem | None = None
+    comparison_stats: LeagueItemStats | None = None
+
+    @property
+    def win_rate_delta(self) -> float | None:
+        if self.stats.win_rate is None or self.peer_win_rate is None:
+            return None
+        return self.stats.win_rate - self.peer_win_rate
 
