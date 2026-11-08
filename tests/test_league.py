@@ -3,18 +3,33 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 from duckies_bot.cogs.league import LeagueCog
-from duckies_bot.features.league.formatter import build_match_embed, build_player_embed
+from duckies_bot.features.league.analytics import parse_league_item_question
+from duckies_bot.features.league.formatter import (
+    build_item_analysis_embed,
+    build_match_embed,
+    build_player_embed,
+)
 from duckies_bot.features.league.models import (
+    LeagueChampion,
+    LeagueItem,
+    LeagueItemAnalysis,
+    LeagueItemStats,
+    LeagueLadderEntry,
     LeagueMatch,
+    LeagueMatchTimeline,
     MatchParticipant,
     RankedEntry,
     RiotAccount,
     SummonerProfile,
 )
 from duckies_bot.features.league.service import LeagueService, parse_riot_id
+from duckies_bot.features.item_questions import InterpretedItemQuestion
 from duckies_bot.providers.riot.client import RiotClient, regional_route
 from duckies_bot.providers.riot.errors import RiotAPIError
 from duckies_bot.presentation import Palette
@@ -60,6 +75,7 @@ def participant(
     team_id: int = 100,
     champion: str = "Ahri",
     win: bool = True,
+    item_ids: tuple[int, ...] = (3089, 3020),
 ) -> MatchParticipant:
     return MatchParticipant(
         puuid=puuid,
@@ -93,11 +109,17 @@ def participant(
         largest_multi_kill=3,
         placement=None,
         subteam_id=None,
-        item_ids=(3089, 3020),
+        item_ids=item_ids,
     )
 
 
-def league_match(match_id: str, queue_id: int, *, win: bool = True) -> LeagueMatch:
+def league_match(
+    match_id: str,
+    queue_id: int,
+    *,
+    win: bool = True,
+    version: str = "16.21.1.123",
+) -> LeagueMatch:
     players = [participant("target", win=win)]
     players.extend(participant(f"ally-{index}", champion="Garen", win=win) for index in range(4))
     players.extend(
@@ -109,7 +131,7 @@ def league_match(match_id: str, queue_id: int, *, win: bool = True) -> LeagueMat
         queue_id=queue_id,
         game_mode="CLASSIC" if queue_id != 450 else "ARAM",
         game_type="MATCHED_GAME",
-        game_version="16.21.1.123",
+        game_version=version,
         started_at_ms=1_790_000_000_000,
         duration_seconds=1_800,
         participants=tuple(players),
@@ -203,6 +225,80 @@ class RiotClientTests(unittest.IsolatedAsyncioTestCase):
                 "target", "NA1"
             )
 
+    async def test_parses_ladder_entries_and_ranked_match_filters(self) -> None:
+        session = FakeSession(
+            [
+                FakeResponse(
+                    [{"puuid": "player-1", "tier": "GOLD", "rank": "II"}]
+                ),
+                FakeResponse(["NA1_1", "NA1_2"]),
+            ]
+        )
+        client = RiotClient("key", session=session)  # type: ignore[arg-type]
+
+        entries = await client.get_league_entries("NA1", "gold", "ii")
+        match_ids = await client.get_match_ids(
+            "player-1", "NA1", count=8, queue=420
+        )
+
+        self.assertEqual(entries, (LeagueLadderEntry("player-1", "GOLD", "II"),))
+        self.assertEqual(match_ids, ("NA1_1", "NA1_2"))
+        self.assertIn("/RANKED_SOLO_5x5/GOLD/II", session.requests[0][0])
+        self.assertEqual(session.requests[0][1]["params"], {"page": "1"})
+        self.assertEqual(
+            session.requests[1][1]["params"],
+            {"start": "0", "count": "8", "queue": "420"},
+        )
+
+    async def test_parses_current_summoners_rift_items(self) -> None:
+        session = FakeSession(
+            [
+                FakeResponse(["16.22.1"]),
+                FakeResponse(
+                    {
+                        "data": {
+                            "3031": {
+                                "name": "Infinity Edge",
+                                "gold": {"purchasable": True, "total": 3500},
+                                "maps": {"11": True},
+                                "image": {"full": "3031.png"},
+                                "tags": ["Damage", "CriticalStrike"],
+                            },
+                            "9999": {
+                                "name": "Arena Item",
+                                "gold": {"purchasable": True, "total": 3000},
+                                "maps": {"11": False},
+                            },
+                            "323031": {
+                                "name": "Infinity Edge",
+                                "gold": {"purchasable": True, "total": 3500},
+                                "maps": {"11": True},
+                            },
+                            "1101": {
+                                "name": "Scorchclaw Pup",
+                                "gold": {"purchasable": True, "total": 450},
+                                "maps": {"11": True},
+                            },
+                            "1107": {
+                                "name": "Scorchclaw Pup",
+                                "gold": {"purchasable": True, "total": 450},
+                                "maps": {"11": True},
+                            },
+                        }
+                    }
+                ),
+            ]
+        )
+        client = RiotClient(None, session=session)  # type: ignore[arg-type]
+
+        version, items = await client.get_data_dragon_items()
+
+        self.assertEqual(version, "16.22.1")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].name, "Infinity Edge")
+        self.assertEqual(items[0].total_cost, 3500)
+        self.assertIn("16.22.1/img/item/3031.png", items[0].icon_url)
+
 
 class FakeRiotClient:
     def __init__(self) -> None:
@@ -237,6 +333,330 @@ class FakeRiotClient:
 
 
 class LeagueFeatureTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.analysis_items = (
+            LeagueItem(
+                3031,
+                "Infinity Edge",
+                "https://example.test/3031.png",
+                3500,
+                ("Damage", "CriticalStrike"),
+                (),
+            ),
+            LeagueItem(
+                3072,
+                "Bloodthirster",
+                "https://example.test/3072.png",
+                3400,
+                ("Damage",),
+                (),
+            ),
+            LeagueItem(
+                3089,
+                "Rabadon's Deathcap",
+                "https://example.test/3089.png",
+                3600,
+                ("SpellDamage",),
+                (),
+            ),
+            LeagueItem(
+                2022,
+                "Glowing Mote",
+                "https://example.test/2022.png",
+                250,
+                ("CooldownReduction",),
+                (3024,),
+            ),
+            LeagueItem(
+                3161,
+                "Spear of Shojin",
+                "https://example.test/3161.png",
+                3100,
+                ("Damage", "CooldownReduction"),
+                (),
+            ),
+        )
+        self.champions = (
+            LeagueChampion(901, "Smolder", "Smolder", "https://example.test/smolder.png"),
+            LeagueChampion(103, "Ahri", "Ahri", "https://example.test/ahri.png"),
+        )
+
+    def test_parses_discord_style_item_and_rank_questions(self) -> None:
+        cases = (
+            (
+                "how good is Infinity Edge in Gold to Platinum?",
+                "Infinity Edge",
+                "Gold–Platinum",
+            ),
+            ("how gud infinety edge gold2", "Infinity Edge", "Gold II"),
+            ("IE plat", "Infinity Edge", "Platinum"),
+            ("ie in gm", "Infinity Edge", "Grandmaster"),
+            ("bloodthirser gm", "Bloodthirster", "Grandmaster"),
+            ("rabadons deathcap dia", "Rabadon's Deathcap", "Diamond"),
+            ("INFINITY EDGE!!! GOLD-PLAT!!!", "Infinity Edge", "Gold–Platinum"),
+        )
+
+        for question, item_name, rank_label in cases:
+            with self.subTest(question=question):
+                parsed = parse_league_item_question(question, self.analysis_items)
+                self.assertEqual(parsed.item.name, item_name)
+                self.assertEqual(parsed.rank_label, rank_label)
+
+    def test_league_question_defaults_to_emerald_and_limits_wide_ranges(self) -> None:
+        parsed = parse_league_item_question("is infinity edge good", self.analysis_items)
+        self.assertEqual(parsed.rank_label, "Emerald (default)")
+        self.assertEqual(parsed.buckets[0].tier, "EMERALD")
+        with self.assertRaisesRegex(ValueError, "adjacent tiers"):
+            parse_league_item_question(
+                "infinity edge gold to diamond",
+                self.analysis_items,
+            )
+
+    def test_rejects_incomplete_or_unresolvable_discord_questions(self) -> None:
+        with self.assertRaisesRegex(ValueError, "current League item"):
+            parse_league_item_question(
+                "whats the build on smolder", self.analysis_items, self.champions
+            )
+        with self.assertRaisesRegex(ValueError, "Include a champion"):
+            parse_league_item_question(
+                "ie 2nd item vs shojin", self.analysis_items, self.champions
+            )
+        with self.assertRaisesRegex(ValueError, "both sides"):
+            parse_league_item_question(
+                "ie 2nd item smolder vs", self.analysis_items, self.champions
+            )
+
+    def test_same_tier_division_range_samples_both_ends(self) -> None:
+        parsed = parse_league_item_question(
+            "infinity edge gold 4 to gold 1",
+            self.analysis_items,
+        )
+
+        self.assertEqual(parsed.rank_label, "Gold IV–Gold I")
+        self.assertEqual(
+            [(bucket.tier, bucket.division) for bucket in parsed.buckets],
+            [("GOLD", "IV"), ("GOLD", "I")],
+        )
+
+    def test_parses_champion_slot_comparison_with_discord_variations(self) -> None:
+        cases = (
+            "how good is IE 2nd item on smolder compared to shojin",
+            "ie second item smolder vs spear of shojin?",
+            "IE 2nd item on smodler compared to shojin!!!",
+            "ie item 2 smolder versus shojin",
+        )
+        for question in cases:
+            with self.subTest(question=question):
+                parsed = parse_league_item_question(
+                    question, self.analysis_items, self.champions
+                )
+                self.assertEqual(parsed.item.name, "Infinity Edge")
+                self.assertEqual(parsed.comparison_item.name, "Spear of Shojin")
+                self.assertEqual(parsed.champion.name, "Smolder")
+                self.assertEqual(parsed.item_position, 2)
+                self.assertEqual(parsed.rank_label, "Emerald (default)")
+
+    def test_parses_realistic_discord_champion_comparison_errors(self) -> None:
+        cases = (
+            "ie 2nd smolder v shojin",
+            "is IE 2nd on smolder better than shojin",
+            "how gud ie secnd item smodler compard to shojin",
+            "IE 2 item Smolder VS Shojin!!!",
+            "ie item2 on smolder compared 2 shojin",
+            "infinityedge second item smolder against spearofshojin",
+            "ie 2nd core item on smodler versus shojn",
+            "yo ie second smolder instead of shojin?",
+            "IE SECOND ITEM SMOLDER V SHOJIN NO PUNCTUATION",
+        )
+        for question in cases:
+            with self.subTest(question=question):
+                parsed = parse_league_item_question(
+                    question, self.analysis_items, self.champions
+                )
+                self.assertEqual(parsed.item.name, "Infinity Edge")
+                self.assertEqual(parsed.comparison_item.name, "Spear of Shojin")
+                self.assertEqual(parsed.champion.name, "Smolder")
+                self.assertEqual(parsed.item_position, 2)
+                self.assertEqual(parsed.rank_label, "Emerald (default)")
+
+    async def test_champion_item_slot_service_uses_timeline_purchase_order(self) -> None:
+        match = league_match("NA1_slot", 420, version="16.22.1.999")
+        players = tuple(
+            replace(
+                player,
+                champion_name="Smolder" if index < 2 else player.champion_name,
+                participant_id=index + 1,
+                win=index == 0,
+            )
+            for index, player in enumerate(match.participants)
+        )
+        match = replace(match, participants=players)
+
+        class ChampionAnalysisClient:
+            async def get_data_dragon_items(self):
+                return "16.22.1", self_items
+
+            async def get_data_dragon_champions(self, version):
+                return version, self_champions
+
+            async def get_league_entries(self, platform, tier, division):
+                return (LeagueLadderEntry("seed", tier, division),)
+
+            async def get_match_ids(self, puuid, platform, *, count, queue):
+                return (match.match_id,)
+
+            async def get_match(self, match_id, platform):
+                return match
+
+            async def get_match_timeline(self, match_id, platform):
+                return LeagueMatchTimeline(
+                    match_id,
+                    {1: (3072, 3031), 2: (3072, 3161)},
+                )
+
+        self_items, self_champions = self.analysis_items, self.champions
+        interpreter = SimpleNamespace(
+            interpret=AsyncMock(
+                return_value=InterpretedItemQuestion(
+                    game="league",
+                    intent="compare_items",
+                    primary_item="Infinity Edge",
+                    comparison_item="Spear of Shojin",
+                    character="Smolder",
+                    item_position=2,
+                    minimum_rank=None,
+                    maximum_rank=None,
+                    needs_clarification=False,
+                    clarification=None,
+                    confidence="high",
+                )
+            )
+        )
+        result = await LeagueService(
+            ChampionAnalysisClient(), question_interpreter=interpreter
+        ).answer_item_question(
+            "is IE 2nd on smolder better than shojin", "NA1"
+        )
+
+        self.assertEqual(result.stats, LeagueItemStats(3031, 1, 0))
+        self.assertEqual(result.comparison_stats, LeagueItemStats(3161, 0, 1))
+        self.assertEqual(result.champion.name, "Smolder")
+        self.assertEqual(result.item_position, 2)
+        interpreter.interpret.assert_awaited_once_with(
+            "is IE 2nd on smolder better than shojin", game="league"
+        )
+
+    async def test_riot_client_parses_timeline_item_purchases_in_order(self) -> None:
+        session = FakeSession(
+            [
+                FakeResponse(
+                    {
+                        "metadata": {"matchId": "NA1_123"},
+                        "info": {
+                            "frames": [
+                                {"events": [
+                                    {"type": "ITEM_PURCHASED", "participantId": 4, "itemId": 1055},
+                                    {"type": "CHAMPION_KILL", "participantId": 4},
+                                ]},
+                                {"events": [
+                                    {"type": "ITEM_PURCHASED", "participantId": 4, "itemId": 3031},
+                                    {"type": "ITEM_PURCHASED", "participantId": 7, "itemId": 3161},
+                                ]},
+                            ]
+                        },
+                    }
+                )
+            ]
+        )
+        client = RiotClient("test-key", session=session)  # type: ignore[arg-type]
+
+        timeline = await client.get_match_timeline("NA1_123", "NA1")
+
+        self.assertEqual(timeline.purchases[4], (1055, 3031))
+        self.assertEqual(timeline.purchases[7], (3161,))
+        self.assertIn("/timeline", session.requests[0][0])
+
+    async def test_item_analysis_aggregates_current_patch_sample_and_caches(self) -> None:
+        matches: dict[str, LeagueMatch] = {}
+        for match_number in range(4):
+            base = league_match(
+                f"NA1_sample_{match_number}",
+                420,
+                version="16.22.1.999",
+            )
+            players = tuple(
+                replace(
+                    player,
+                    item_ids=(3031,) if index in {0, 1, 2, 5, 6} else (3072,),
+                )
+                for index, player in enumerate(base.participants)
+            )
+            matches[base.match_id] = replace(base, participants=players)
+
+        class AnalysisClient:
+            def __init__(self) -> None:
+                self.ladder_calls = 0
+                self.match_calls = 0
+
+            async def get_data_dragon_items(self):
+                return "16.22.1", self_items
+
+            async def get_league_entries(self, platform, tier, division):
+                del platform, tier, division
+                self.ladder_calls += 1
+                return tuple(
+                    LeagueLadderEntry(f"seed-{index}", "GOLD", "II")
+                    for index in range(3)
+                )
+
+            async def get_match_ids(self, puuid, platform, *, count, queue):
+                del puuid, platform, count, queue
+                return tuple(matches)
+
+            async def get_match(self, match_id, platform):
+                del platform
+                self.match_calls += 1
+                return matches[match_id]
+
+        self_items = self.analysis_items
+        client = AnalysisClient()
+        service = LeagueService(client)  # type: ignore[arg-type]
+
+        result = await service.answer_item_question("is IE good in gold", "NA1")
+        again = await service.answer_item_question("infinity edge gold", "NA1")
+
+        self.assertEqual(result.stats, LeagueItemStats(3031, 12, 8))
+        self.assertEqual(result.games_scanned, 4)
+        self.assertEqual(result.players_scanned, 40)
+        self.assertEqual(result.peer_win_rate, 0.4)
+        self.assertEqual(result.verdict, "Promising, but low confidence")
+        self.assertEqual(again, result)
+        self.assertEqual(client.ladder_calls, 1)
+        self.assertEqual(client.match_calls, 4)
+
+    def test_item_analysis_embed_labels_bounded_sample(self) -> None:
+        analysis = LeagueItemAnalysis(
+            item=self.analysis_items[0],
+            stats=LeagueItemStats(3031, 12, 8),
+            data_dragon_version="16.22.1",
+            rank_label="Gold",
+            platform="NA1",
+            games_scanned=4,
+            players_scanned=40,
+            peer_win_rate=0.4,
+            peer_count=1,
+            confidence_low=0.39,
+            confidence_high=0.78,
+            verdict="Promising, but low confidence",
+        )
+
+        embed = build_item_analysis_embed(analysis)
+
+        self.assertIn("sample", (embed.description or "").casefold())
+        self.assertIn("20 item observations", embed.fields[0].value)
+        self.assertIn("20.0% above", embed.fields[1].value)
+        self.assertIn("not a census", embed.fields[2].value)
+
     async def test_service_preserves_history_from_all_modes(self) -> None:
         lookup = await LeagueService(FakeRiotClient()).player_lookup(  # type: ignore[arg-type]
             "Duckie#NA1", "NA1"
@@ -297,5 +717,5 @@ class LeagueFeatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(regional_route("EUW1"), "europe")
         self.assertEqual(regional_route("SG2"), "sea")
         command_names = {command.name for command in LeagueCog.league.commands}
-        self.assertEqual(command_names, {"player"})
+        self.assertEqual(command_names, {"ask", "player"})
 

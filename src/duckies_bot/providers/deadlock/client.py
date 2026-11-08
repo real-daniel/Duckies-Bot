@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 import time
 from typing import Any
 
@@ -14,6 +15,8 @@ from ...features.deadlock.models import (
     HeroExperience,
     HeroSummary,
     ItemSummary,
+    ItemStats,
+    PatchSummary,
     PlayerHistory,
     PlayerRank,
     RankAsset,
@@ -104,6 +107,92 @@ class DeadlockClient:
             if item is not None:
                 items.append(item)
         return tuple(items)
+
+    async def get_item_stats(
+        self,
+        *,
+        minimum_timestamp: int,
+        minimum_badge: int | None = None,
+        maximum_badge: int | None = None,
+        match_mode: str = "ranked",
+        hero_id: int | None = None,
+    ) -> tuple[ItemStats, ...]:
+        if minimum_timestamp <= 0:
+            raise ValueError("minimum_timestamp must be positive")
+        if match_mode not in {"ranked", "unranked"}:
+            raise ValueError("match_mode must be ranked or unranked")
+        params = {
+            "game_mode": "normal",
+            "match_mode": match_mode,
+            "min_unix_timestamp": str(minimum_timestamp),
+            "min_matches": "1",
+            "corrupted_items": "exclude",
+        }
+        if minimum_badge is not None:
+            params["min_average_badge"] = str(minimum_badge)
+        if maximum_badge is not None:
+            params["max_average_badge"] = str(maximum_badge)
+        if hero_id is not None:
+            params["hero_id"] = str(hero_id)
+        document = await self._get_json("/v1/analytics/item-stats", params=params)
+        if not isinstance(document, list):
+            raise InvalidDeadlockResponseError()
+        results: list[ItemStats] = []
+        for raw in document:
+            if not isinstance(raw, Mapping):
+                continue
+            item_id = _optional_int(raw.get("item_id"))
+            wins = _optional_int(raw.get("wins"))
+            losses = _optional_int(raw.get("losses"))
+            matches = _optional_int(raw.get("matches"))
+            players = _optional_int(raw.get("players"))
+            if None in (item_id, wins, losses, matches, players):
+                continue
+            assert item_id is not None
+            assert wins is not None
+            assert losses is not None
+            assert matches is not None
+            assert players is not None
+            results.append(
+                ItemStats(
+                    item_id=item_id,
+                    wins=wins,
+                    losses=losses,
+                    matches=matches,
+                    players=players,
+                    average_buy_time_seconds=_optional_number(raw.get("avg_buy_time_s")),
+                    average_sell_time_seconds=_optional_number(raw.get("avg_sell_time_s")),
+                )
+            )
+        return tuple(results)
+
+    async def get_latest_gameplay_patch(self) -> PatchSummary:
+        """Return the latest update boundary suitable for current-patch analytics."""
+        document = await self._get_json("/v2/patches")
+        if not isinstance(document, list):
+            raise InvalidDeadlockResponseError()
+        candidates: list[PatchSummary] = []
+        fallback: list[PatchSummary] = []
+        for raw in document:
+            if not isinstance(raw, Mapping):
+                continue
+            title = _optional_str(raw.get("title"))
+            published = _optional_str(raw.get("pub_date"))
+            link = _optional_str(raw.get("link"))
+            if title is None or published is None or link is None:
+                continue
+            try:
+                timestamp = int(datetime.fromisoformat(published.replace("Z", "+00:00")).timestamp())
+            except ValueError:
+                continue
+            patch = PatchSummary(title=title.strip(), published_at=timestamp, link=link)
+            fallback.append(patch)
+            if "update" in title.casefold():
+                candidates.append(patch)
+        available = candidates or fallback
+        if not available:
+            raise InvalidDeadlockResponseError()
+        return max(available, key=lambda patch: patch.published_at)
 
     async def get_asset_bytes(self, url: str, *, max_bytes: int = 2 * 1024 * 1024) -> bytes:
         """Download a small image asset referenced by the asset catalog."""

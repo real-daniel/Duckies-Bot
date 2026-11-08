@@ -57,6 +57,54 @@ class ItemSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class ItemStats:
+    item_id: int
+    wins: int
+    losses: int
+    matches: int
+    players: int
+    average_buy_time_seconds: float
+    average_sell_time_seconds: float
+
+    @property
+    def win_rate(self) -> float | None:
+        if self.matches <= 0:
+            return None
+        return self.wins / self.matches
+
+
+@dataclass(frozen=True, slots=True)
+class PatchSummary:
+    title: str
+    published_at: int
+    link: str
+
+
+@dataclass(frozen=True, slots=True)
+class ItemAnalysis:
+    item: ItemSummary
+    stats: ItemStats
+    patch: PatchSummary
+    rank_label: str
+    minimum_badge: int | None
+    maximum_badge: int | None
+    peer_win_rate: float | None
+    peer_count: int
+    confidence_low: float
+    confidence_high: float
+    verdict: str
+    hero: HeroSummary | None = None
+    comparison_item: ItemSummary | None = None
+    comparison_stats: ItemStats | None = None
+
+    @property
+    def win_rate_delta(self) -> float | None:
+        if self.stats.win_rate is None or self.peer_win_rate is None:
+            return None
+        return self.stats.win_rate - self.peer_win_rate
+
+
+@dataclass(frozen=True, slots=True)
 class StatueBuff:
     """One permanent golden-statue modifier observed in the live demo."""
 
