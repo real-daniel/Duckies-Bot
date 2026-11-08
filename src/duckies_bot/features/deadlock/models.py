@@ -132,6 +132,18 @@ class HeroStats:
 
 
 @dataclass(frozen=True, slots=True)
+class HeroRelationshipStats:
+    hero_id: int
+    related_hero_id: int
+    wins: int
+    matches: int
+
+    @property
+    def win_rate(self) -> float | None:
+        return self.wins / self.matches if self.matches else None
+
+
+@dataclass(frozen=True, slots=True)
 class HeroAnalysis:
     hero: HeroSummary
     stats: HeroStats
@@ -154,6 +166,32 @@ class HeroAnalysis:
         if self.stats.win_rate is None or baseline is None:
             return None
         return self.stats.win_rate - baseline
+
+
+@dataclass(frozen=True, slots=True)
+class RankedInsight:
+    entity_id: int
+    name: str
+    icon_url: str | None
+    wins: int
+    matches: int
+    pick_rate: float | None = None
+
+    @property
+    def win_rate(self) -> float | None:
+        return self.wins / self.matches if self.matches else None
+
+
+@dataclass(frozen=True, slots=True)
+class RankedInsightsAnalysis:
+    category: str
+    subject_name: str | None
+    entries: tuple[RankedInsight, ...]
+    patch: PatchSummary
+    rank_label: str
+    minimum_badge: int | None
+    maximum_badge: int | None
+    description: str
 
 
 @dataclass(frozen=True, slots=True)

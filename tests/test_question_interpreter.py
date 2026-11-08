@@ -28,6 +28,11 @@ class FakeResponses:
             "rank_scope": "all",
             "metrics": ["win_rate", "sample_size"],
             "match_mode": "ranked",
+            "role": "any",
+            "lane_scope": "any",
+            "result_limit": 5,
+            "sort_by": "win_rate",
+            "sort_direction": "high",
             "needs_clarification": False,
             "clarification": None,
             "confidence": "high",
@@ -105,6 +110,11 @@ class OpenAIQuestionInterpreterTests(unittest.IsolatedAsyncioTestCase):
             "rank_scope": "and_above",
             "metrics": ["win_rate", "pick_rate", "sample_size"],
             "match_mode": "ranked",
+            "role": "any",
+            "lane_scope": "any",
+            "result_limit": 5,
+            "sort_by": "win_rate",
+            "sort_direction": "high",
             "needs_clarification": False,
             "clarification": None,
             "confidence": "high",
@@ -121,6 +131,58 @@ class OpenAIQuestionInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pick_rate", result.metrics)
         prompt = str(responses.calls[0]["input"])
         self.assertIn("Do not require an item", prompt)
+
+    async def test_common_analysis_categories_fit_the_query_plan(self) -> None:
+        cases = (
+            (
+                "whos the top 3 heros oracle no punctuation",
+                {"intent": "rank", "subject_type": "character", "primary_subject": None,
+                 "comparison_subject": None, "character_context": None, "result_limit": 3},
+            ),
+            (
+                "best items on hze",
+                {"intent": "recommend", "subject_type": "item", "primary_subject": None,
+                 "comparison_subject": None, "character_context": "Haze", "result_limit": 5},
+            ),
+            (
+                "who counters haze oracle+",
+                {"intent": "matchup", "subject_type": "character", "primary_subject": "Haze",
+                 "comparison_subject": None, "character_context": None, "result_limit": 5},
+            ),
+            (
+                "best teamates for haze",
+                {"intent": "synergy", "subject_type": "character", "primary_subject": "Haze",
+                 "comparison_subject": None, "character_context": None, "result_limit": 5},
+            ),
+        )
+        for question, specifics in cases:
+            payload = {
+                "game": "deadlock",
+                "item_position": None,
+                "minimum_rank": "Oracle" if "oracle" in question else None,
+                "maximum_rank": None,
+                "rank_scope": "and_above" if "+" in question else (
+                    "exact" if "oracle" in question else "all"
+                ),
+                "metrics": ["win_rate", "sample_size"],
+                "match_mode": "ranked",
+                "role": "any",
+                "lane_scope": "any",
+                "sort_by": "win_rate",
+                "sort_direction": "high",
+                "needs_clarification": False,
+                "clarification": None,
+                "confidence": "high",
+                **specifics,
+            }
+            interpreter = OpenAIQuestionInterpreter(
+                "secret",
+                client=FakeOpenAIClient(FakeResponses(payload)),  # type: ignore[arg-type]
+            )
+            with self.subTest(question=question):
+                result = await interpreter.interpret(question, game="deadlock")
+                self.assertEqual(result.intent, specifics["intent"])
+                self.assertEqual(result.subject_type, specifics["subject_type"])
 
     async def test_provider_failure_is_distinct_from_bad_user_input(self) -> None:
         responses = FakeResponses()
@@ -146,6 +208,11 @@ class OpenAIQuestionInterpreterTests(unittest.IsolatedAsyncioTestCase):
             rank_scope="range",
             metrics=("win_rate",),
             match_mode="ranked",
+            role="any",
+            lane_scope="any",
+            result_limit=5,
+            sort_by="win_rate",
+            sort_direction="high",
             needs_clarification=False,
             clarification=None,
             confidence="high",
@@ -172,6 +239,11 @@ class OpenAIQuestionInterpreterTests(unittest.IsolatedAsyncioTestCase):
             rank_scope="all",
             metrics=("win_rate",),
             match_mode="ranked",
+            role="any",
+            lane_scope="any",
+            result_limit=5,
+            sort_by="win_rate",
+            sort_direction="high",
             needs_clarification=False,
             clarification=None,
             confidence="medium",

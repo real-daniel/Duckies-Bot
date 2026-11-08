@@ -234,9 +234,9 @@ class DeadlockCog(commands.Cog):
             for profile in profiles[:25]
         ]
 
-    @deadlock.command(name="ask", description="Ask about current-patch hero or item performance")
+    @deadlock.command(name="ask", description="Ask about meta, counters, synergies, heroes, or items")
     @app_commands.describe(
-        question="Example: Is Haze good in Oracle+, or Glass Cannon vs Lucky Shot on Haze?",
+        question="Example: Who counters Haze in Oracle+, or what items work best on Haze?",
     )
     async def ask(self, interaction: discord.Interaction, question: str) -> None:
         await interaction.response.defer(thinking=True)

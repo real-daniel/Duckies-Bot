@@ -18,6 +18,7 @@ from duckies_bot.features.league.formatter import (
 from duckies_bot.features.league.models import (
     LeagueChampion,
     LeagueChampionAnalysis,
+    LeagueRankedInsightsAnalysis,
     LeagueItem,
     LeagueItemAnalysis,
     LeagueItemStats,
@@ -531,6 +532,11 @@ class LeagueFeatureTests(unittest.IsolatedAsyncioTestCase):
                     rank_scope="all",
                     metrics=("win_rate",),
                     match_mode="ranked",
+                    role="any",
+                    lane_scope="any",
+                    result_limit=5,
+                    sort_by="win_rate",
+                    sort_direction="high",
                     needs_clarification=False,
                     clarification=None,
                     confidence="high",
@@ -593,6 +599,11 @@ class LeagueFeatureTests(unittest.IsolatedAsyncioTestCase):
             rank_scope="exact",
             metrics=("win_rate", "pick_rate", "sample_size"),
             match_mode="ranked",
+            role="any",
+            lane_scope="any",
+            result_limit=5,
+            sort_by="win_rate",
+            sort_direction="high",
             needs_clarification=False,
             clarification=None,
             confidence="high",
@@ -613,6 +624,80 @@ class LeagueFeatureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(result, LeagueChampionAnalysis)
                 self.assertEqual(result.champion.name, "Smolder")
                 self.assertEqual(result.stats.matches, 2)
+
+    async def test_routes_meta_items_matchups_and_synergies(self) -> None:
+        base = league_match("NA1_categories", 420, version="16.22.1.999")
+        players = tuple(
+            replace(
+                player,
+                champion_name="Smolder" if index < 5 else "Ahri",
+                team_id=100 if index in {0, 1, 5, 6, 7} else 200,
+                win=index in {0, 1, 5, 6, 7},
+                item_ids=(3031,) if index < 3 else (3161,),
+            )
+            for index, player in enumerate(base.participants)
+        )
+        match = replace(base, participants=players)
+
+        class CategoryClient:
+            async def get_data_dragon_items(self):
+                return "16.22.1", self_items
+
+            async def get_data_dragon_champions(self, version):
+                return version, self_champions
+
+            async def get_league_entries(self, platform, tier, division):
+                return (LeagueLadderEntry("seed", tier, division),)
+
+            async def get_match_ids(self, puuid, platform, *, count, queue):
+                return (match.match_id,)
+
+            async def get_match(self, match_id, platform):
+                return match
+
+        self_items, self_champions = self.analysis_items, self.champions
+        interpreter = SimpleNamespace(interpret=AsyncMock())
+        service = LeagueService(
+            CategoryClient(), question_interpreter=interpreter  # type: ignore[arg-type]
+        )
+
+        def plan(intent: str, *, subject_type: str = "character"):
+            return InterpretedItemQuestion(
+                game="league",
+                intent=intent,
+                subject_type=subject_type,
+                primary_subject="Smolder" if intent in {"matchup", "synergy"} else None,
+                comparison_subject="Ahri" if intent in {"matchup", "synergy"} else None,
+                character_context="Smolder" if intent == "recommend" else None,
+                item_position=None,
+                minimum_rank="Emerald",
+                maximum_rank=None,
+                rank_scope="exact",
+                metrics=("win_rate", "pick_rate", "sample_size"),
+                match_mode="ranked",
+                role="any",
+                lane_scope="any",
+                result_limit=2,
+                sort_by="win_rate",
+                sort_direction="high",
+                needs_clarification=False,
+                clarification=None,
+                confidence="high",
+            )
+
+        cases = (
+            ("top champs emerald", plan("rank"), "Champion meta", "Ahri"),
+            ("best items smodler", plan("recommend", subject_type="item"), "Item recommendations", "Infinity Edge"),
+            ("smolder vs ahri", plan("matchup"), "Counters and matchups", "Ahri"),
+            ("smolder with ahri any good", plan("synergy"), "Champion synergies", "Ahri"),
+        )
+        for question, interpretation, category, first_name in cases:
+            interpreter.interpret.return_value = interpretation
+            with self.subTest(question=question):
+                result = await service.answer_question(question, "NA1")
+                self.assertIsInstance(result, LeagueRankedInsightsAnalysis)
+                self.assertEqual(result.category, category)
+                self.assertEqual(result.entries[0].name, first_name)
 
     async def test_riot_client_parses_timeline_item_purchases_in_order(self) -> None:
         session = FakeSession(

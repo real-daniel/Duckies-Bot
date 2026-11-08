@@ -10,6 +10,7 @@ import discord
 from ...presentation import field_name, finish_embed, make_embed
 from .models import (
     LeagueChampionAnalysis,
+    LeagueRankedInsightsAnalysis,
     LeagueItemAnalysis,
     LeagueMatch,
     LeaguePlayerLookup,
@@ -19,11 +20,60 @@ from .models import (
 
 
 def build_analysis_embed(
-    analysis: LeagueItemAnalysis | LeagueChampionAnalysis,
+    analysis: LeagueItemAnalysis | LeagueChampionAnalysis | LeagueRankedInsightsAnalysis,
 ) -> discord.Embed:
+    if isinstance(analysis, LeagueRankedInsightsAnalysis):
+        return build_ranked_insights_embed(analysis)
     if isinstance(analysis, LeagueChampionAnalysis):
         return build_champion_analysis_embed(analysis)
     return build_item_analysis_embed(analysis)
+
+
+def build_ranked_insights_embed(
+    analysis: LeagueRankedInsightsAnalysis,
+) -> discord.Embed:
+    subject = f" for {analysis.subject_name}" if analysis.subject_name else ""
+    embed = make_embed(
+        f"{analysis.category}{subject}",
+        (
+            f"**{analysis.rank_label}** ranked sample from **{analysis.platform}**\n"
+            f"{analysis.description}"
+        ),
+        tone="info",
+    )
+    for index, entry in enumerate(analysis.entries, 1):
+        rate = entry.win_rate
+        details = f"**{entry.wins:,}W–{entry.matches - entry.wins:,}L** · {entry.matches:,} observations"
+        if rate is not None:
+            details += f" · **{rate:.1%} WR**"
+        if entry.pick_rate is not None:
+            details += f" · **{entry.pick_rate:.1%} share**"
+        embed.add_field(
+            name=field_name(f"{index}. {entry.name}"),
+            value=details,
+            inline=False,
+        )
+    if not analysis.entries:
+        embed.add_field(
+            name=field_name("No qualifying results"),
+            value="The bounded sample did not have enough observations for that filter.",
+            inline=False,
+        )
+    embed.add_field(
+        name=field_name("Sample size"),
+        value=(
+            f"Scanned **{analysis.games_scanned:,} matches** and "
+            f"**{analysis.players_scanned:,} relevant player records**."
+        ),
+        inline=False,
+    )
+    finish_embed(
+        embed,
+        "League analytics",
+        source="Riot Games API",
+        context=f"Bounded Ranked Solo/Duo sample · patch {analysis.data_dragon_version}",
+    )
+    return embed
 
 
 def build_champion_analysis_embed(analysis: LeagueChampionAnalysis) -> discord.Embed:

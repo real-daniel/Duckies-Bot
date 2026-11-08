@@ -14,6 +14,7 @@ from ...features.deadlock.models import (
     ActivePlayer,
     HeroExperience,
     HeroStats,
+    HeroRelationshipStats,
     HeroSummary,
     ItemSummary,
     ItemStats,
@@ -214,6 +215,75 @@ class DeadlockClient:
                 total_deaths=_optional_int(raw.get("total_deaths")) or 0,
                 total_assists=_optional_int(raw.get("total_assists")) or 0,
                 total_player_damage=_optional_int(raw.get("total_player_damage")) or 0,
+            ))
+        return tuple(results)
+
+    async def get_hero_counter_stats(
+        self,
+        **filters: Any,
+    ) -> tuple[HeroRelationshipStats, ...]:
+        return await self._get_hero_relationship_stats(
+            "/v1/analytics/hero-counter-stats",
+            first_key="hero_id",
+            second_key="enemy_hero_id",
+            **filters,
+        )
+
+    async def get_hero_synergy_stats(
+        self,
+        **filters: Any,
+    ) -> tuple[HeroRelationshipStats, ...]:
+        return await self._get_hero_relationship_stats(
+            "/v1/analytics/hero-synergy-stats",
+            first_key="hero_id1",
+            second_key="hero_id2",
+            **filters,
+        )
+
+    async def _get_hero_relationship_stats(
+        self,
+        path: str,
+        *,
+        first_key: str,
+        second_key: str,
+        minimum_timestamp: int,
+        minimum_badge: int | None = None,
+        maximum_badge: int | None = None,
+        match_mode: str = "ranked",
+        same_lane: bool = False,
+        minimum_matches: int = 5,
+    ) -> tuple[HeroRelationshipStats, ...]:
+        if minimum_timestamp <= 0:
+            raise ValueError("minimum_timestamp must be positive")
+        params = {
+            "game_mode": "normal",
+            "match_mode": match_mode,
+            "min_unix_timestamp": str(minimum_timestamp),
+            "same_lane_filter": str(same_lane).lower(),
+            "min_matches": str(minimum_matches),
+        }
+        if minimum_badge is not None:
+            params["min_average_badge"] = str(minimum_badge)
+        if maximum_badge is not None:
+            params["max_average_badge"] = str(maximum_badge)
+        document = await self._get_json(path, params=params)
+        if not isinstance(document, list):
+            raise InvalidDeadlockResponseError()
+        results: list[HeroRelationshipStats] = []
+        for raw in document:
+            if not isinstance(raw, Mapping):
+                continue
+            first = _optional_int(raw.get(first_key))
+            second = _optional_int(raw.get(second_key))
+            wins = _optional_int(raw.get("wins"))
+            matches = _optional_int(raw.get("matches_played"))
+            if None in (first, second, wins, matches):
+                continue
+            results.append(HeroRelationshipStats(
+                hero_id=int(first),
+                related_hero_id=int(second),
+                wins=int(wins),
+                matches=int(matches),
             ))
         return tuple(results)
 

@@ -47,9 +47,9 @@ class LeagueCog(commands.Cog):
         self.bot = bot
         self.service = service
 
-    @league.command(name="ask", description="Ask about champion or item performance by rank")
+    @league.command(name="ask", description="Ask about meta, matchups, synergies, champions, or items")
     @app_commands.describe(
-        question="Example: Is Smolder good in Emerald, or is IE second better than Shojin?",
+        question="Example: Top mids Emerald, who counters Smolder, or best second items on Smolder?",
         region="League platform to sample",
     )
     @app_commands.choices(

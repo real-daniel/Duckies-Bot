@@ -22,6 +22,11 @@ class InterpretedAnalyticsQuestion:
     rank_scope: str
     metrics: tuple[str, ...]
     match_mode: str
+    role: str
+    lane_scope: str
+    result_limit: int
+    sort_by: str
+    sort_direction: str
     needs_clarification: bool
     clarification: str | None
     confidence: str
@@ -50,11 +55,15 @@ def validate_analytics_question(
         )
     if interpreted.game not in {expected_game, "unknown"}:
         raise ValueError(f"That looks like a {interpreted.game.title()} question.")
-    if interpreted.intent not in {"analyze", "compare"}:
-        raise ValueError("Ask me to analyze or compare a champion, hero, or item.")
+    if interpreted.intent not in {
+        "analyze", "compare", "rank", "recommend", "matchup", "synergy"
+    }:
+        raise ValueError(
+            "Ask me to analyze, compare, rank, or recommend champions, heroes, or items."
+        )
     if interpreted.subject_type not in {"item", "character"}:
         raise ValueError("Ask about a champion, hero, or item that has recorded statistics.")
-    if not interpreted.primary_subject:
+    if not interpreted.primary_subject and interpreted.intent not in {"rank", "recommend"}:
         raise ValueError("I could not identify what you want analyzed.")
     if interpreted.intent == "compare" and not interpreted.comparison_subject:
         raise ValueError("Name both subjects you want compared.")
@@ -68,6 +77,19 @@ def validate_analytics_question(
         raise ValueError("I could not understand the requested rank range.")
     if interpreted.match_mode not in {"ranked", "unranked", "all"}:
         raise ValueError("Match mode must be ranked, unranked, or all matches.")
+    if interpreted.role not in {"any", "top", "jungle", "mid", "bottom", "support"}:
+        raise ValueError("I could not understand the requested League role.")
+    if interpreted.lane_scope not in {"any", "same_lane"}:
+        raise ValueError("I could not understand the requested matchup scope.")
+    if not 1 <= interpreted.result_limit <= 10:
+        raise ValueError("Ask for between one and ten results.")
+    if interpreted.sort_by not in {"win_rate", "pick_rate", "popularity", "matches"}:
+        raise ValueError("I could not understand how to rank those results.")
+    if interpreted.sort_direction not in {"high", "low"}:
+        raise ValueError("I could not understand the requested ranking direction.")
+    if interpreted.intent == "recommend" and interpreted.subject_type == "item" \
+            and not interpreted.character_context:
+        raise ValueError("Include the champion or hero you want item recommendations for.")
     return interpreted
 
 

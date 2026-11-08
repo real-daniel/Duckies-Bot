@@ -40,6 +40,8 @@ from .models import (
     PlayerLookup,
     PlayerRank,
     RankAsset,
+    RankedInsight,
+    RankedInsightsAnalysis,
     PatchSummary,
     ScoutedPlayer,
     SteamProfile,
@@ -78,6 +80,18 @@ def _performance_verdict(
     if delta <= -0.03:
         return "Below the field"
     return "Around the field average"
+
+
+def _rank_insights(entries, interpretation) -> tuple[RankedInsight, ...]:
+    if interpretation.sort_by in {"popularity", "matches", "pick_rate"}:
+        key = lambda entry: (entry.pick_rate or 0.0, entry.matches)
+    else:
+        key = lambda entry: (entry.win_rate or 0.0, entry.matches)
+    return tuple(sorted(
+        entries,
+        key=key,
+        reverse=interpretation.sort_direction == "high",
+    )[: interpretation.result_limit])
 
 
 class DeadlockService:
@@ -144,7 +158,9 @@ class DeadlockService:
             raise ValueError("That question asks about a hero rather than an item.")
         return result
 
-    async def answer_question(self, question: str) -> ItemAnalysis | HeroAnalysis:
+    async def answer_question(
+        self, question: str
+    ) -> ItemAnalysis | HeroAnalysis | RankedInsightsAnalysis:
         """Interpret and route a flexible current-patch analytics question."""
         if self.question_interpreter is None:
             return await self._answer_item_question(question)
@@ -161,6 +177,12 @@ class DeadlockService:
         interpretation = validate_analytics_question(
             interpretation, expected_game="deadlock"
         )
+        if interpretation.intent == "rank":
+            return await self._answer_meta_ranking(interpretation)
+        if interpretation.intent == "recommend":
+            return await self._answer_item_recommendations(interpretation)
+        if interpretation.intent in {"matchup", "synergy"}:
+            return await self._answer_hero_relationship(interpretation)
         if interpretation.subject_type == "character":
             return await self._answer_hero_question(interpretation)
         return await self._answer_item_question(
@@ -318,6 +340,207 @@ class DeadlockService:
             verdict=verdict,
             comparison_hero=comparison_hero,
             comparison_stats=comparison_stats,
+        )
+
+    async def _analytics_context(self, interpretation):
+        heroes, ranks, patch = await asyncio.gather(
+            self._get_hero_catalog(),
+            self._get_rank_assets(),
+            self._get_latest_patch(),
+        )
+        rank_filter = parse_rank_filter(
+            canonical_rank_question(interpretation),
+            ranks,
+            and_above=interpretation.rank_scope == "and_above",
+        )
+        match_mode = {
+            "ranked": "ranked",
+            "unranked": "unranked",
+            "all": "ranked,unranked",
+        }[interpretation.match_mode]
+        return heroes, patch, rank_filter, match_mode
+
+    async def _answer_meta_ranking(self, interpretation) -> RankedInsightsAnalysis:
+        heroes, patch, rank_filter, match_mode = await self._analytics_context(
+            interpretation
+        )
+        rows = await self.client.get_hero_stats(
+            minimum_timestamp=patch.published_at,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            match_mode=match_mode,
+        )
+        catalog = {hero.hero_id: hero for hero in heroes}
+        entries = tuple(
+            RankedInsight(
+                row.hero_id,
+                hero.name,
+                hero.icon_url,
+                row.wins,
+                row.matches,
+                row.pick_rate,
+            )
+            for row in rows
+            if row.matches >= 20 and (hero := catalog.get(row.hero_id)) is not None
+        )
+        selected = _rank_insights(entries, interpretation)
+        return RankedInsightsAnalysis(
+            category="Hero meta",
+            subject_name=None,
+            entries=selected,
+            patch=patch,
+            rank_label=rank_filter.rank_label,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            description="Current-patch heroes ranked from aggregate match results.",
+        )
+
+    async def _answer_item_recommendations(self, interpretation) -> RankedInsightsAnalysis:
+        heroes, patch, rank_filter, match_mode = await self._analytics_context(
+            interpretation
+        )
+        hero = resolve_hero(interpretation.character_context or "", heroes)
+        if hero is None:
+            raise ValueError(
+                f"I could not find a Deadlock hero matching {interpretation.character_context!r}."
+            )
+        items = await self._get_item_catalog()
+        rows, hero_rows = await asyncio.gather(
+            self._get_item_stats(
+                patch,
+                rank_filter.minimum_badge,
+                rank_filter.maximum_badge,
+                hero.hero_id,
+                match_mode,
+            ),
+            self.client.get_hero_stats(
+                minimum_timestamp=patch.published_at,
+                minimum_badge=rank_filter.minimum_badge,
+                maximum_badge=rank_filter.maximum_badge,
+                match_mode=match_mode,
+            ),
+        )
+        catalog = {item.item_id: item for item in items}
+        hero_matches = next(
+            (row.matches for row in hero_rows if row.hero_id == hero.hero_id), 0
+        )
+        entries = tuple(
+            RankedInsight(
+                row.item_id,
+                item.name,
+                item.icon_url,
+                row.wins,
+                row.matches,
+                min(1.0, row.matches / hero_matches) if hero_matches else None,
+            )
+            for row in rows
+            if row.matches >= 20
+            and (item := catalog.get(row.item_id)) is not None
+            and item.shopable
+        )
+        selected = _rank_insights(entries, interpretation)
+        return RankedInsightsAnalysis(
+            category="Item recommendations",
+            subject_name=hero.name,
+            entries=selected,
+            patch=patch,
+            rank_label=rank_filter.rank_label,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            description=(
+                "Hero-filtered purchases ranked by observed results; expensive late-game "
+                "items have survivorship bias."
+            ),
+        )
+
+    async def _answer_hero_relationship(self, interpretation) -> RankedInsightsAnalysis:
+        heroes, patch, rank_filter, match_mode = await self._analytics_context(
+            interpretation
+        )
+        hero = resolve_hero(interpretation.primary_subject or "", heroes)
+        if hero is None:
+            raise ValueError(
+                f"I could not find a Deadlock hero matching {interpretation.primary_subject!r}."
+            )
+        comparison = None
+        if interpretation.comparison_subject:
+            comparison = resolve_hero(interpretation.comparison_subject, heroes)
+            if comparison is None:
+                raise ValueError(
+                    f"I could not find a Deadlock hero matching {interpretation.comparison_subject!r}."
+                )
+        filters = dict(
+            minimum_timestamp=patch.published_at,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            match_mode=match_mode,
+            same_lane=interpretation.lane_scope == "same_lane",
+            minimum_matches=5,
+        )
+        if interpretation.intent == "matchup":
+            rows = await self.client.get_hero_counter_stats(**filters)
+            category = "Counters and matchups"
+        else:
+            rows = await self.client.get_hero_synergy_stats(**filters)
+            category = "Hero synergies"
+        catalog = {candidate.hero_id: candidate for candidate in heroes}
+        built_entries = []
+        for row in rows:
+            if row.hero_id == hero.hero_id:
+                related_id = row.related_hero_id
+                subject_wins = row.wins
+            elif row.related_hero_id == hero.hero_id:
+                related_id = row.hero_id
+                subject_wins = (
+                    row.wins
+                    if interpretation.intent == "synergy"
+                    else row.matches - row.wins
+                )
+            else:
+                continue
+            if comparison is not None and related_id != comparison.hero_id:
+                continue
+            related = catalog.get(related_id)
+            if related is None:
+                continue
+            built_entries.append(RankedInsight(
+                related_id,
+                related.name,
+                related.icon_url,
+                subject_wins,
+                row.matches,
+            ))
+        entries = tuple(built_entries)
+        if not entries:
+            raise ValueError(
+                f"No current-patch {category.casefold()} data was recorded for {hero.name} and that filter."
+            )
+        if comparison is not None:
+            selected = entries[:1]
+        elif interpretation.intent == "matchup":
+            selected = tuple(sorted(
+                entries,
+                key=lambda entry: (entry.win_rate if entry.win_rate is not None else 1.0),
+            )[: interpretation.result_limit])
+        else:
+            selected = tuple(sorted(
+                entries,
+                key=lambda entry: (entry.win_rate or 0.0, entry.matches),
+                reverse=True,
+            )[: interpretation.result_limit])
+        return RankedInsightsAnalysis(
+            category=category,
+            subject_name=hero.name,
+            entries=selected,
+            patch=patch,
+            rank_label=rank_filter.rank_label,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            description=(
+                "Lowest subject win rates appear first for counters."
+                if interpretation.intent == "matchup" and comparison is None
+                else "Pair results from matches where both heroes appeared."
+            ),
         )
 
     async def player_lookup(

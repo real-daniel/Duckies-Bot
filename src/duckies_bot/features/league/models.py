@@ -236,3 +236,30 @@ class LeagueChampionAnalysis:
             return None
         return self.stats.win_rate - baseline
 
+
+@dataclass(frozen=True, slots=True)
+class LeagueRankedInsight:
+    entity_id: int
+    name: str
+    icon_url: str | None
+    wins: int
+    matches: int
+    pick_rate: float | None = None
+
+    @property
+    def win_rate(self) -> float | None:
+        return self.wins / self.matches if self.matches else None
+
+
+@dataclass(frozen=True, slots=True)
+class LeagueRankedInsightsAnalysis:
+    category: str
+    subject_name: str | None
+    entries: tuple[LeagueRankedInsight, ...]
+    data_dragon_version: str
+    rank_label: str
+    platform: str
+    games_scanned: int
+    players_scanned: int
+    description: str
+

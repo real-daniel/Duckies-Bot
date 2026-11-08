@@ -10,6 +10,7 @@ import discord
 from ..accounts.steam import STEAM_ID64_OFFSET
 from .models import (
     HeroAnalysis,
+    RankedInsightsAnalysis,
     ItemAnalysis,
     LiveMatchSnapshot,
     LivePlayer,
@@ -21,10 +22,52 @@ from .models import (
 from ...presentation import field_name, finish_embed, make_embed
 
 
-def build_analysis_embed(analysis: ItemAnalysis | HeroAnalysis) -> discord.Embed:
+def build_analysis_embed(
+    analysis: ItemAnalysis | HeroAnalysis | RankedInsightsAnalysis,
+) -> discord.Embed:
+    if isinstance(analysis, RankedInsightsAnalysis):
+        return build_ranked_insights_embed(analysis)
     if isinstance(analysis, HeroAnalysis):
         return build_hero_analysis_embed(analysis)
     return build_item_analysis_embed(analysis)
+
+
+def build_ranked_insights_embed(analysis: RankedInsightsAnalysis) -> discord.Embed:
+    subject = f" for {analysis.subject_name}" if analysis.subject_name else ""
+    embed = make_embed(
+        f"{analysis.category}{subject}",
+        f"**{analysis.rank_label}** · current patch\n{analysis.description}",
+        tone="info",
+        url=analysis.patch.link,
+    )
+    for index, entry in enumerate(analysis.entries, 1):
+        rate = entry.win_rate
+        details = f"**{entry.wins:,}W–{entry.matches - entry.wins:,}L** · {entry.matches:,} observations"
+        if rate is not None:
+            details += f" · **{rate:.1%} WR**"
+        if entry.pick_rate is not None:
+            details += f" · **{entry.pick_rate:.1%} usage**"
+        embed.add_field(
+            name=field_name(f"{index}. {entry.name}"),
+            value=details,
+            inline=False,
+        )
+    if not analysis.entries:
+        embed.add_field(
+            name=field_name("No qualifying results"),
+            value="The current filter did not have enough recorded observations.",
+            inline=False,
+        )
+    finish_embed(
+        embed,
+        "Deadlock analytics",
+        source="Deadlock API",
+        context=(
+            f"{analysis.patch.title} · since "
+            f"{datetime.fromtimestamp(analysis.patch.published_at, UTC):%Y-%m-%d}"
+        ),
+    )
+    return embed
 
 
 def build_hero_analysis_embed(analysis: HeroAnalysis) -> discord.Embed:

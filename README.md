@@ -15,7 +15,9 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   Smolder better than Shojin?`. Luna converts natural language into a validated analytics
   plan containing the subject type, comparison, champion context, item order, metrics,
   match mode, and rank range. Riot Match-V5 supplies the bounded Ranked Solo/Duo sample;
-  components and boots do not count as core-item slots. Rank defaults to Emerald.
+  components and boots do not count as core-item slots. It also handles role-filtered meta
+  rankings, counters/head-to-head matchups, teammate synergies, and observed item
+  recommendations. Rank defaults to Emerald.
 
 - `/steam link steam_id:<id>` associates your Discord user with a SteamID64,
   SteamID3, SteamID2, or numeric Steam profile URL.
@@ -29,8 +31,9 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
 - `/deadlock ask question:<text>` answers hero and item-performance questions such as
   `Is Haze good in Oracle+?` or `Glass Cannon on Haze compared to Lucky Shot in Oracle?`.
   The validated Luna plan routes to current-patch hero or item analytics with the requested
-  rank and match-mode filters. Deadlock item comparisons intentionally do not infer purchase
-  order because its builds have many flexible item slots.
+  rank and match-mode filters. It also supports hero meta rankings, dedicated counter and
+  synergy statistics, and hero-specific item recommendations. Deadlock item comparisons
+  intentionally do not infer purchase order because its builds have many flexible item slots.
 - `/deadlock scout match_id:<id-or-top-200> screenshot:<image>` is intended for the start of
   a match. Provide either the numeric ID or a full game screenshot; screenshot
   mode crops and reads only the bottom-right quadrant locally. It waits for the
