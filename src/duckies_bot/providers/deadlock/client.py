@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import time
 from typing import Any
 
 import aiohttp
@@ -138,6 +139,27 @@ class DeadlockClient:
             raise InvalidDeadlockResponseError()
         return PlayerRank(tier=tier, subrank=subrank)
 
+    async def get_latest_ranked_season_start(self) -> int:
+        """Return the start timestamp for the most recently started ranked season."""
+        document = await self._get_json("/v1/assets/ranked-seasons")
+        if not isinstance(document, list):
+            raise InvalidDeadlockResponseError()
+        now = int(time.time())
+        starts = [
+            start
+            for season in document
+            if isinstance(season, Mapping)
+            for intervals in (season.get("intervals"),)
+            if isinstance(intervals, list)
+            for interval in intervals
+            if isinstance(interval, Mapping)
+            if (start := _optional_int(interval.get("start_timestamp"))) is not None
+            and start <= now
+        ]
+        if not starts:
+            raise InvalidDeadlockResponseError()
+        return max(starts)
+
     async def get_steam_profiles(
         self,
         account_ids: Sequence[int],
@@ -177,7 +199,10 @@ class DeadlockClient:
         *,
         outcome_limit: int = 5,
         match_mode: int | None = None,
+        minimum_timestamp: int | None = None,
     ) -> PlayerHistory:
+        if minimum_timestamp is not None and minimum_timestamp <= 0:
+            raise ValueError("minimum_timestamp must be positive")
         document = await self._get_json(f"/v1/players/{account_id}/match-history")
         if not isinstance(document, list):
             raise InvalidDeadlockResponseError()
@@ -188,6 +213,11 @@ class DeadlockClient:
         )
         outcomes: list[str] = []
         for raw in ordered:
+            if (
+                minimum_timestamp is not None
+                and (_optional_int(raw.get("start_time")) or 0) < minimum_timestamp
+            ):
+                continue
             if match_mode is not None and _optional_int(raw.get("match_mode")) != match_mode:
                 continue
             outcome = _optional_int(raw.get("player_match_outcome"))
@@ -205,6 +235,7 @@ class DeadlockClient:
         hero_ids: Sequence[int] | None = None,
         *,
         match_mode: str | None = None,
+        minimum_timestamp: int | None = None,
     ) -> tuple[HeroExperience, ...]:
         if not account_ids:
             return ()
@@ -213,6 +244,10 @@ class DeadlockClient:
             params.append(("hero_ids", ",".join(str(value) for value in sorted(set(hero_ids)))))
         if match_mode:
             params.append(("match_mode", match_mode))
+        if minimum_timestamp is not None:
+            if minimum_timestamp <= 0:
+                raise ValueError("minimum_timestamp must be positive")
+            params.append(("min_unix_timestamp", str(minimum_timestamp)))
         document = await self._get_json("/v1/players/hero-stats", params=params)
         if not isinstance(document, list):
             raise InvalidDeadlockResponseError()

@@ -162,6 +162,57 @@ def active_match_document() -> list[dict[str, Any]]:
 
 
 class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_filters_ranked_player_stats_to_latest_started_season(self) -> None:
+        session = FakeSession(
+            [
+                FakeResponse(
+                    [
+                        {"intervals": [{"start_timestamp": 1_700_000_000}]},
+                        {"intervals": [{"start_timestamp": 1_790_000_000}]},
+                    ]
+                ),
+                FakeResponse(
+                    [
+                        {
+                            "start_time": 1_789_999_999,
+                            "player_match_outcome": 1,
+                            "match_mode": 4,
+                        },
+                        {
+                            "start_time": 1_790_000_001,
+                            "player_match_outcome": 2,
+                            "match_mode": 4,
+                        },
+                    ]
+                ),
+                FakeResponse([]),
+            ]
+        )
+        client = DeadlockClient(session=session)  # type: ignore[arg-type]
+
+        season_start = await client.get_latest_ranked_season_start()
+        history = await client.get_player_history(
+            123,
+            match_mode=4,
+            minimum_timestamp=season_start,
+        )
+        await client.get_hero_experience(
+            [123],
+            match_mode="ranked",
+            minimum_timestamp=season_start,
+        )
+
+        self.assertEqual(season_start, 1_790_000_000)
+        self.assertEqual(history.outcomes, ("L",))
+        self.assertEqual(
+            session.requests[2][1],
+            [
+                ("account_ids", "123"),
+                ("match_mode", "ranked"),
+                ("min_unix_timestamp", "1790000000"),
+            ],
+        )
+
     async def test_downloads_catalog_image_assets(self) -> None:
         session = FakeSession([FakeResponse(b"image-bytes")])
         client = DeadlockClient(session=session)  # type: ignore[arg-type]
@@ -1020,11 +1071,15 @@ class DeadlockFormatterTests(unittest.TestCase):
 
 class FakeScoutAPI:
     def __init__(self) -> None:
+        self.ranked_season_start = 1_793_908_800
+        self.ranked_season_calls = 0
         self.rank_calls = 0
         self.history_calls = 0
         self.history_match_modes: list[int | None] = []
+        self.history_minimum_timestamps: list[int | None] = []
         self.experience_calls = 0
         self.experience_match_modes: list[str | None] = []
+        self.experience_minimum_timestamps: list[int | None] = []
         self.asset_calls = 0
         self.broadcast_url_calls = 0
         self.hero_asset_calls = 0
@@ -1102,14 +1157,20 @@ class FakeScoutAPI:
         self.rank_calls += 1
         return PlayerRank(8, 5)
 
+    async def get_latest_ranked_season_start(self) -> int:
+        self.ranked_season_calls += 1
+        return self.ranked_season_start
+
     async def get_player_history(
         self,
         account_id: int,
         *,
         match_mode: int | None = None,
+        minimum_timestamp: int | None = None,
     ) -> PlayerHistory:
         self.history_calls += 1
         self.history_match_modes.append(match_mode)
+        self.history_minimum_timestamps.append(minimum_timestamp)
         return PlayerHistory(account_id, ("W", "L"))
 
     async def get_hero_experience(
@@ -1118,9 +1179,11 @@ class FakeScoutAPI:
         hero_ids: list[int] | None = None,
         *,
         match_mode: str | None = None,
+        minimum_timestamp: int | None = None,
     ):
         self.experience_calls += 1
         self.experience_match_modes.append(match_mode)
+        self.experience_minimum_timestamps.append(minimum_timestamp)
         return tuple(
             experience
             for account_id in account_ids
@@ -1257,6 +1320,34 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(standard.match_mode, "unranked")
         self.assertEqual(api.experience_match_modes, ["ranked", "unranked"])
         self.assertEqual(api.history_match_modes, [4, 1])
+        self.assertEqual(
+            api.experience_minimum_timestamps,
+            [api.ranked_season_start, None],
+        )
+        self.assertEqual(
+            api.history_minimum_timestamps,
+            [api.ranked_season_start, None],
+        )
+
+    async def test_ranked_lookup_hides_prior_season_rank_without_current_games(self) -> None:
+        class PriorSeasonOnlyAPI(FakeScoutAPI):
+            async def get_hero_experience(self, *args: object, **kwargs: object):
+                self.experience_calls += 1
+                self.experience_match_modes.append(kwargs.get("match_mode"))  # type: ignore[arg-type]
+                self.experience_minimum_timestamps.append(
+                    kwargs.get("minimum_timestamp")  # type: ignore[arg-type]
+                )
+                return ()
+
+        api = PriorSeasonOnlyAPI()
+        service = DeadlockService(api)  # type: ignore[arg-type]
+        profile = SteamProfile(1001, "Ducky", "https://example.test", None, None, 14)
+
+        result = await service.player_lookup(1001, profile=profile, match_mode="ranked")
+
+        self.assertIsNone(result.rank)
+        self.assertIsNone(result.rank_name)
+        self.assertEqual(result.total_matches, 0)
 
     async def test_live_stream_refreshes_unavailable_broadcast_url(self) -> None:
         snapshot = LiveMatchSnapshot(123, 0, ())
@@ -1766,6 +1857,15 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api.history_match_modes, [4, 4])
         self.assertEqual(api.experience_calls, 1)
         self.assertEqual(api.experience_match_modes, ["ranked"])
+        self.assertEqual(
+            api.experience_minimum_timestamps,
+            [api.ranked_season_start],
+        )
+        self.assertEqual(
+            api.history_minimum_timestamps,
+            [api.ranked_season_start, api.ranked_season_start],
+        )
+        self.assertEqual(api.ranked_season_calls, 1)
         self.assertEqual(api.asset_calls, 1)
         self.assertEqual(api.hero_asset_calls, 1)
         self.assertEqual(api.item_asset_calls, 1)
@@ -1797,6 +1897,10 @@ class DeadlockServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api.broadcast_url_calls, 0)
         self.assertEqual(api.history_match_modes, [4, 4])
         self.assertEqual(api.experience_match_modes, ["ranked"])
+        self.assertEqual(
+            api.experience_minimum_timestamps,
+            [api.ranked_season_start],
+        )
 
     async def test_live_match_maps_shopable_upgrade_ids_to_items(self) -> None:
         api = FakeScoutAPI()

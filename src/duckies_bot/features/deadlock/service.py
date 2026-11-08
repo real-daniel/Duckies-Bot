@@ -55,9 +55,14 @@ class DeadlockService:
         self.client = client
         self.live_client = live_client
         self.broadcast_urls = broadcast_urls
-        self._profile_cache: dict[tuple[int, str | None], _CachedProfile] = {}
-        self._experience_cache: dict[tuple[int, int], _CachedExperience] = {}
-        self._total_matches_cache: dict[int, _CachedTotalMatches] = {}
+        self._profile_cache: dict[tuple[int, str | None, int | None], _CachedProfile] = {}
+        self._experience_cache: dict[
+            tuple[int, int, str | None, int | None], _CachedExperience
+        ] = {}
+        self._total_matches_cache: dict[
+            tuple[int, str | None, int | None], _CachedTotalMatches
+        ] = {}
+        self._ranked_season_cache: _CachedRankedSeason | None = None
         self._hero_cache: dict[int, HeroSummary] = {}
         self._hero_cache_expires_at = 0.0
         self._hero_cache_lock = asyncio.Lock()
@@ -114,13 +119,23 @@ class DeadlockService:
                     "No Deadlock player data was found for that Steam account."
                 )
 
+        season_start = (
+            await self._get_latest_ranked_season_start()
+            if match_mode == "ranked"
+            else None
+        )
         cached_profile, experiences, rank_assets = await asyncio.gather(
             self._get_profile(
                 account_id,
                 asyncio.Semaphore(1),
                 history_match_mode=match_mode,
+                minimum_timestamp=season_start,
             ),
-            self._try_get_all_experience(account_id, match_mode=match_mode),
+            self._try_get_all_experience(
+                account_id,
+                match_mode=match_mode,
+                minimum_timestamp=season_start,
+            ),
             self._get_rank_assets(),
         )
         ordered_experiences = tuple(
@@ -132,21 +147,24 @@ class DeadlockService:
         heroes = await self._get_heroes(
             tuple(item.hero_id for item in ordered_experiences)
         )
+        rank = cached_profile.rank
+        if match_mode == "ranked" and not ordered_experiences:
+            rank = None
         rank_name = None
-        if cached_profile.rank is not None:
+        if rank is not None:
             rank_name = next(
                 (
                     asset.name
                     for asset in rank_assets
-                    if asset.tier == cached_profile.rank.tier
+                    if asset.tier == rank.tier
                 ),
                 None,
             )
-            if cached_profile.rank.tier == 0:
+            if rank.tier == 0:
                 rank_name = "Unranked"
         return PlayerLookup(
             profile=profile,
-            rank=cached_profile.rank,
+            rank=rank,
             rank_name=rank_name,
             recent_outcomes=(
                 cached_profile.history.outcomes if cached_profile.history else ()
@@ -195,6 +213,7 @@ class DeadlockService:
 
     async def scout_snapshot(self, snapshot: LiveMatchSnapshot) -> MatchScout:
         """Build a scouting report from an already-open live match snapshot."""
+        season_start = await self._get_latest_ranked_season_start()
         pairs = {
             (player.account_id, player.hero_id)
             for player in snapshot.players
@@ -203,11 +222,20 @@ class DeadlockService:
         profile_limit = asyncio.Semaphore(8)
         profiles_task = asyncio.gather(
             *(
-                self._get_profile(player.account_id, profile_limit, ranked_history=True)
+                self._get_profile(
+                    player.account_id,
+                    profile_limit,
+                    ranked_history=True,
+                    minimum_timestamp=season_start,
+                )
                 for player in snapshot.players
             )
         )
-        experiences_task = self._get_experiences(pairs, match_mode="ranked")
+        experiences_task = self._get_experiences(
+            pairs,
+            match_mode="ranked",
+            minimum_timestamp=season_start,
+        )
         rank_assets_task = self._get_rank_assets()
         profiles, experience_data, rank_assets = await asyncio.gather(
             profiles_task,
@@ -245,16 +273,18 @@ class DeadlockService:
 
         players: list[ScoutedPlayer] = []
         for player, profile in zip(snapshot.players, profiles, strict=True):
+            current_matches = total_matches_by_account.get(player.account_id, 0)
+            rank = profile.rank if current_matches > 0 else None
             rank_name = None
-            if profile.rank is not None:
-                rank_name = rank_names.get(profile.rank.tier)
-                if profile.rank.tier == 0:
+            if rank is not None:
+                rank_name = rank_names.get(rank.tier)
+                if rank.tier == 0:
                     rank_name = "Unranked"
             players.append(
                 ScoutedPlayer(
                     player=player,
                     hero=snapshot.hero(player.hero_id),
-                    rank=profile.rank,
+                    rank=rank,
                     rank_name=rank_name,
                     experience=experience_by_pair.get((player.account_id, player.hero_id)),
                     recent_outcomes=profile.history.outcomes if profile.history else (),
@@ -518,18 +548,23 @@ class DeadlockService:
         *,
         ranked_history: bool = False,
         history_match_mode: str | None = None,
+        minimum_timestamp: int | None = None,
     ) -> _CachedProfile:
         if ranked_history:
             history_match_mode = "ranked"
         now = time.monotonic()
-        cache_key = (account_id, history_match_mode)
+        cache_key = (account_id, history_match_mode, minimum_timestamp)
         cached = self._profile_cache.get(cache_key)
         if cached is not None and cached.expires_at > now:
             return cached
         async with limit:
             rank_result, history_result = await asyncio.gather(
                 self._try_get_rank(account_id),
-                self._try_get_history(account_id, match_mode=history_match_mode),
+                self._try_get_history(
+                    account_id,
+                    match_mode=history_match_mode,
+                    minimum_timestamp=minimum_timestamp,
+                ),
             )
         cached = _CachedProfile(
             expires_at=now + 15 * 60,
@@ -544,6 +579,7 @@ class DeadlockService:
         pairs: set[tuple[int, int]],
         *,
         match_mode: str | None = None,
+        minimum_timestamp: int | None = None,
     ) -> tuple[
         tuple[HeroExperience, ...],
         dict[int, int],
@@ -551,17 +587,27 @@ class DeadlockService:
     ]:
         now = time.monotonic()
         account_ids = {account_id for account_id, _ in pairs}
+
+        def total_key(account_id: int) -> tuple[int, str | None, int | None]:
+            return account_id, match_mode, minimum_timestamp
+
+        def experience_key(
+            pair: tuple[int, int],
+        ) -> tuple[int, int, str | None, int | None]:
+            return pair[0], pair[1], match_mode, minimum_timestamp
+
         missing_accounts = {
             account_id
             for account_id in account_ids
-            if account_id not in self._total_matches_cache
-            or self._total_matches_cache[account_id].expires_at <= now
+            if total_key(account_id) not in self._total_matches_cache
+            or self._total_matches_cache[total_key(account_id)].expires_at <= now
         }
         if missing_accounts:
             try:
                 fetched = await self.client.get_hero_experience(
                     sorted(missing_accounts),
                     match_mode=match_mode,
+                    minimum_timestamp=minimum_timestamp,
                 )
             except DeadlockAPIError:
                 fetched = None
@@ -573,41 +619,58 @@ class DeadlockService:
                 for item in fetched:
                     if item.account_id in totals:
                         totals[item.account_id] += item.matches_played
-                    self._experience_cache[(item.account_id, item.hero_id)] = _CachedExperience(
+                    key = (item.account_id, item.hero_id, match_mode, minimum_timestamp)
+                    self._experience_cache[key] = _CachedExperience(
                         expires_at=now + 15 * 60,
                         experience=item,
                     )
                 for account_id, total in totals.items():
-                    self._total_matches_cache[account_id] = _CachedTotalMatches(
+                    self._total_matches_cache[total_key(account_id)] = _CachedTotalMatches(
                         expires_at=now + 15 * 60,
                         matches=total,
                     )
                 for pair in pairs:
                     if pair[0] not in missing_accounts:
                         continue
-                    self._experience_cache[pair] = _CachedExperience(
+                    self._experience_cache[experience_key(pair)] = _CachedExperience(
                         expires_at=now + 15 * 60,
                         experience=fetched_by_pair.get(pair),
                     )
         experiences = tuple(
             cached.experience
             for pair in pairs
-            if (cached := self._experience_cache.get(pair)) is not None
+            if (cached := self._experience_cache.get(experience_key(pair))) is not None
             and cached.experience is not None
         )
         totals = {
             account_id: cached.matches
             for account_id in account_ids
-            if (cached := self._total_matches_cache.get(account_id)) is not None
+            if (cached := self._total_matches_cache.get(total_key(account_id))) is not None
         }
         all_experiences = tuple(
             cached.experience
-            for (account_id, _), cached in self._experience_cache.items()
+            for (
+                account_id,
+                _,
+                cached_mode,
+                cached_minimum,
+            ), cached in self._experience_cache.items()
             if account_id in account_ids
+            and cached_mode == match_mode
+            and cached_minimum == minimum_timestamp
             and cached.expires_at > now
             and cached.experience is not None
         )
         return experiences, totals, all_experiences
+
+    async def _get_latest_ranked_season_start(self) -> int:
+        now = time.monotonic()
+        cached = self._ranked_season_cache
+        if cached is not None and cached.expires_at > now:
+            return cached.start_timestamp
+        start = await self.client.get_latest_ranked_season_start()
+        self._ranked_season_cache = _CachedRankedSeason(now + 60 * 60, start)
+        return start
 
     async def _get_rank_assets(self) -> tuple[RankAsset, ...]:
         now = time.monotonic()
@@ -732,6 +795,7 @@ class DeadlockService:
         *,
         ranked_only: bool = False,
         match_mode: str | None = None,
+        minimum_timestamp: int | None = None,
     ) -> PlayerHistory | None:
         if ranked_only:
             match_mode = "ranked"
@@ -740,6 +804,7 @@ class DeadlockService:
             return await self.client.get_player_history(
                 account_id,
                 match_mode=mode_values.get(match_mode),
+                minimum_timestamp=minimum_timestamp,
             )
         except DeadlockAPIError:
             return None
@@ -749,11 +814,13 @@ class DeadlockService:
         account_id: int,
         *,
         match_mode: str | None = None,
+        minimum_timestamp: int | None = None,
     ) -> tuple[HeroExperience, ...]:
         try:
             return await self.client.get_hero_experience(
                 (account_id,),
                 match_mode=match_mode,
+                minimum_timestamp=minimum_timestamp,
             )
         except DeadlockAPIError:
             return ()
@@ -764,6 +831,12 @@ class _CachedProfile:
     expires_at: float
     rank: PlayerRank | None
     history: PlayerHistory | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedRankedSeason:
+    expires_at: float
+    start_timestamp: int
 
 
 @dataclass(frozen=True, slots=True)
