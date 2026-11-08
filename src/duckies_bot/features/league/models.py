@@ -184,3 +184,55 @@ class LeagueItemAnalysis:
             return None
         return self.stats.win_rate - self.peer_win_rate
 
+
+@dataclass(frozen=True, slots=True)
+class LeagueChampionStats:
+    wins: int
+    losses: int
+    games_scanned: int
+    players_scanned: int
+    kills: int = 0
+    deaths: int = 0
+    assists: int = 0
+    damage: int = 0
+
+    @property
+    def matches(self) -> int:
+        return self.wins + self.losses
+
+    @property
+    def win_rate(self) -> float | None:
+        return self.wins / self.matches if self.matches else None
+
+    @property
+    def player_share(self) -> float | None:
+        return self.matches / self.players_scanned if self.players_scanned else None
+
+    @property
+    def kda(self) -> float | None:
+        return (self.kills + self.assists) / max(self.deaths, 1)
+
+
+@dataclass(frozen=True, slots=True)
+class LeagueChampionAnalysis:
+    champion: LeagueChampion
+    stats: LeagueChampionStats
+    data_dragon_version: str
+    rank_label: str
+    platform: str
+    field_win_rate: float | None
+    verdict: str
+    comparison_champion: LeagueChampion | None = None
+    comparison_stats: LeagueChampionStats | None = None
+
+    @property
+    def win_rate_delta(self) -> float | None:
+        baseline = (
+            self.comparison_stats.win_rate
+            if self.comparison_stats is not None
+            else self.field_win_rate
+        )
+        if self.stats.win_rate is None or baseline is None:
+            return None
+        return self.stats.win_rate - baseline
+

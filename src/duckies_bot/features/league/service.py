@@ -6,12 +6,15 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from statistics import median
 
 from ...providers.riot import RiotAPIError, RiotClient
 from ..item_questions import (
     ItemQuestionInterpreter,
     QuestionInterpreterUnavailableError,
     canonical_item_question,
+    canonical_rank_question,
+    validate_analytics_question,
 )
 from .analytics import (
     LeagueItemQuestion,
@@ -20,10 +23,14 @@ from .analytics import (
     comparable_win_rate,
     item_verdict,
     parse_league_item_question,
+    parse_rank_filter,
+    resolve_champion,
     wilson_interval,
 )
 from .models import (
     LeagueChampion,
+    LeagueChampionAnalysis,
+    LeagueChampionStats,
     LeagueItem,
     LeagueItemAnalysis,
     LeagueItemStats,
@@ -35,6 +42,21 @@ from .models import (
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _performance_verdict(
+    win_rate: float | None,
+    baseline: float | None,
+    matches: int,
+) -> str:
+    if win_rate is None or baseline is None or matches < 10:
+        return "Too little data"
+    delta = win_rate - baseline
+    if delta >= 0.03:
+        return "Strong in this sample"
+    if delta <= -0.03:
+        return "Below the sampled field"
+    return "Around the sampled average"
 
 
 class LeagueService:
@@ -62,27 +84,61 @@ class LeagueService:
         question: str,
         platform: str,
     ) -> LeagueItemAnalysis:
+        result = await self.answer_question(question, platform)
+        if not isinstance(result, LeagueItemAnalysis):
+            raise ValueError("That question asks about a champion rather than an item.")
+        return result
+
+    async def answer_question(
+        self,
+        question: str,
+        platform: str,
+    ) -> LeagueItemAnalysis | LeagueChampionAnalysis:
+        """Interpret and route a flexible current-patch analytics question."""
+        if self.question_interpreter is None:
+            return await self._answer_item_question(question, platform)
+        try:
+            interpretation = await self.question_interpreter.interpret(
+                question, game="league"
+            )
+        except QuestionInterpreterUnavailableError:
+            LOGGER.warning(
+                "OpenAI question interpretation unavailable; using League parser",
+                exc_info=True,
+            )
+            return await self._answer_item_question(question, platform)
+        interpretation = validate_analytics_question(
+            interpretation, expected_game="league"
+        )
+        if interpretation.match_mode != "ranked":
+            raise ValueError("League aggregate analysis currently supports ranked matches only.")
+        if interpretation.subject_type == "character":
+            return await self._answer_champion_question(interpretation, platform)
+        return await self._answer_item_question(
+            canonical_item_question(interpretation),
+            platform,
+            rank_and_above=interpretation.rank_scope == "and_above",
+        )
+
+    async def _answer_item_question(
+        self,
+        question: str,
+        platform: str,
+        *,
+        rank_and_above: bool = False,
+    ) -> LeagueItemAnalysis:
         version, items = await self._data_dragon_items()
         if version is None or not items:
             raise RiotAPIError("Riot's current League item catalog is unavailable.")
         _, champions = await self._data_dragon_champions(version)
-        interpreted_question = question
-        if self.question_interpreter is not None:
-            try:
-                interpretation = await self.question_interpreter.interpret(
-                    question, game="league"
-                )
-            except QuestionInterpreterUnavailableError:
-                LOGGER.warning(
-                    "OpenAI question interpretation unavailable; using League parser",
-                    exc_info=True,
-                )
-                interpreted_question = question
-            else:
-                interpreted_question = canonical_item_question(
-                    interpretation, expected_game="league"
-                )
-        parsed = parse_league_item_question(interpreted_question, items, champions)
+        parsed = parse_league_item_question(question, items, champions)
+        if rank_and_above:
+            rank_filter = parse_rank_filter(question, and_above=True)
+            parsed = replace(
+                parsed,
+                buckets=rank_filter.buckets,
+                rank_label=rank_filter.rank_label,
+            )
         matches = await self._ranked_sample(parsed, platform, version)
         patch_key = ".".join(version.split(".")[:2])
         current_matches = tuple(
@@ -201,6 +257,93 @@ class LeagueService:
             champion=parsed.champion,
             item_position=parsed.item_position,
             comparison_item=parsed.comparison_item,
+            comparison_stats=comparison_stats,
+        )
+
+    async def _answer_champion_question(
+        self,
+        interpretation,
+        platform: str,
+    ) -> LeagueChampionAnalysis:
+        version, champions = await self._data_dragon_champions(
+            (await self._data_dragon_items())[0] or ""
+        )
+        if version is None or not champions:
+            raise RiotAPIError("Riot's current League champion catalog is unavailable.")
+        champion = resolve_champion(interpretation.primary_subject or "", champions)
+        if champion is None:
+            raise ValueError(
+                f"I could not find a League champion matching {interpretation.primary_subject!r}."
+            )
+        comparison = None
+        if interpretation.comparison_subject:
+            comparison = resolve_champion(interpretation.comparison_subject, champions)
+            if comparison is None:
+                raise ValueError(
+                    f"I could not find a League champion matching {interpretation.comparison_subject!r}."
+                )
+        rank_filter = parse_rank_filter(
+            canonical_rank_question(interpretation),
+            and_above=interpretation.rank_scope == "and_above",
+        )
+        matches = await self._ranked_sample(rank_filter, platform, version)
+        patch_key = ".".join(version.split(".")[:2])
+        matches = tuple(
+            match for match in matches
+            if match.queue_id == 420 and match.game_version.startswith(f"{patch_key}.")
+        )
+        if not matches:
+            raise RiotAPIError(
+                "Riot returned no current-patch ranked matches for that sample. Try again later."
+            )
+        participants = tuple(player for match in matches for player in match.participants)
+
+        def aggregate(target: LeagueChampion) -> LeagueChampionStats:
+            selected = tuple(
+                player for player in participants
+                if player.champion_name.casefold() in {
+                    target.key.casefold(), target.name.casefold()
+                }
+            )
+            wins = sum(player.win for player in selected)
+            return LeagueChampionStats(
+                wins=wins,
+                losses=len(selected) - wins,
+                games_scanned=len(matches),
+                players_scanned=len(participants),
+                kills=sum(player.kills for player in selected),
+                deaths=sum(player.deaths for player in selected),
+                assists=sum(player.assists for player in selected),
+                damage=sum(player.total_damage_to_champions for player in selected),
+            )
+
+        stats = aggregate(champion)
+        if not stats.matches:
+            raise ValueError(
+                f"No {champion.name} games appeared in the sampled {rank_filter.rank_label} matches."
+            )
+        comparison_stats = aggregate(comparison) if comparison else None
+        if comparison is not None and comparison_stats is not None and not comparison_stats.matches:
+            raise ValueError(
+                f"No {comparison.name} games appeared in the same ranked sample."
+            )
+        champion_rates = []
+        for candidate in champions:
+            candidate_stats = aggregate(candidate)
+            if candidate_stats.win_rate is not None:
+                champion_rates.append(candidate_stats.win_rate)
+        field_rate = median(champion_rates) if champion_rates else None
+        baseline = comparison_stats.win_rate if comparison_stats else field_rate
+        verdict = _performance_verdict(stats.win_rate, baseline, stats.matches)
+        return LeagueChampionAnalysis(
+            champion=champion,
+            stats=stats,
+            data_dragon_version=version,
+            rank_label=rank_filter.rank_label,
+            platform=platform.upper(),
+            field_win_rate=field_rate,
+            verdict=verdict,
+            comparison_champion=comparison,
             comparison_stats=comparison_stats,
         )
 

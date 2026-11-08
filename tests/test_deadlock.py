@@ -22,6 +22,8 @@ from duckies_bot.features.deadlock.models import (
     ActiveMatch,
     ActivePlayer,
     HeroExperience,
+    HeroAnalysis,
+    HeroStats,
     HeroRecord,
     HeroSummary,
     ItemSummary,
@@ -453,6 +455,34 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
                 "max_average_badge": "96",
             },
         )
+
+    async def test_fetches_global_hero_analytics_with_rank_filters(self) -> None:
+        session = FakeSession([FakeResponse([{
+            "hero_id": 7,
+            "bucket": 0,
+            "wins": 560,
+            "losses": 440,
+            "matches": 1000,
+            "matches_per_bucket": 12000,
+            "bucket_matches_since_first_day": 12000,
+            "total_kills": 9000,
+            "total_deaths": 7000,
+            "total_assists": 11000,
+            "total_player_damage": 2_000_000,
+        }])])
+        client = DeadlockClient(base_url="https://example.test", session=session)  # type: ignore[arg-type]
+
+        stats = await client.get_hero_stats(
+            minimum_timestamp=1_762_317_750,
+            minimum_badge=81,
+            maximum_badge=None,
+            match_mode="ranked",
+        )
+
+        self.assertEqual(stats[0].hero_id, 7)
+        self.assertAlmostEqual(stats[0].win_rate or 0, 0.56)
+        self.assertEqual(session.requests[0][1]["min_average_badge"], "81")
+        self.assertNotIn("max_average_badge", session.requests[0][1])
 
     async def test_fetches_and_searches_steam_profiles(self) -> None:
         document = [
@@ -1020,13 +1050,17 @@ class DeadlockItemAnalysisTests(unittest.IsolatedAsyncioTestCase):
             interpret=AsyncMock(
                 return_value=InterpretedItemQuestion(
                     game="deadlock",
-                    intent="compare_items",
-                    primary_item="Glass Cannon",
-                    comparison_item="Decay",
-                    character="Haze",
+                    intent="compare",
+                    subject_type="item",
+                    primary_subject="Glass Cannon",
+                    comparison_subject="Decay",
+                    character_context="Haze",
                     item_position=None,
                     minimum_rank="Oracle",
                     maximum_rank=None,
+                    rank_scope="exact",
+                    metrics=("win_rate",),
+                    match_mode="ranked",
                     needs_clarification=False,
                     clarification=None,
                     confidence="high",
@@ -1052,6 +1086,63 @@ class DeadlockItemAnalysisTests(unittest.IsolatedAsyncioTestCase):
         interpreter.interpret.assert_awaited_once_with(
             "would glass cannon be a better pickup than decay for hze around oracle",
             game="deadlock",
+        )
+
+    async def test_flexible_hero_questions_route_to_ranked_hero_analytics(self) -> None:
+        patch_summary = PatchSummary("Patch", 1_762_317_750, "https://example.test/patch")
+        heroes = (
+            HeroSummary(7, "Haze", "https://example.test/haze.png"),
+            HeroSummary(8, "Warden", None),
+        )
+        rows = (
+            HeroStats(7, 560, 440, 1000, 12_000, 9000, 7000, 11000, 2_000_000),
+            HeroStats(8, 500, 500, 1000, 12_000, 8000, 8000, 10000, 1_800_000),
+        )
+        interpretation = InterpretedItemQuestion(
+            game="deadlock",
+            intent="analyze",
+            subject_type="character",
+            primary_subject="Haze",
+            comparison_subject=None,
+            character_context=None,
+            item_position=None,
+            minimum_rank="Oracle",
+            maximum_rank=None,
+            rank_scope="and_above",
+            metrics=("win_rate", "pick_rate", "sample_size"),
+            match_mode="ranked",
+            needs_clarification=False,
+            clarification=None,
+            confidence="high",
+        )
+        interpreter = SimpleNamespace(interpret=AsyncMock(return_value=interpretation))
+        client = SimpleNamespace(
+            get_heroes=AsyncMock(return_value=heroes),
+            get_rank_assets=AsyncMock(return_value=self.ranks),
+            get_latest_gameplay_patch=AsyncMock(return_value=patch_summary),
+            get_hero_stats=AsyncMock(return_value=rows),
+        )
+        service = DeadlockService(client, question_interpreter=interpreter)  # type: ignore[arg-type]
+
+        realistic_questions = (
+            "is haze good oracle+",
+            "hze any gud in orcale plus",
+            "HAZE GOOD ORACLE AND ABOVE",
+            "yo hows haze doing oracle+ no punctuation",
+        )
+        for question in realistic_questions:
+            with self.subTest(question=question):
+                result = await service.answer_question(question)
+                self.assertIsInstance(result, HeroAnalysis)
+                self.assertEqual(result.hero.name, "Haze")
+                self.assertAlmostEqual(result.stats.win_rate or 0, 0.56)
+                self.assertEqual(result.rank_label, "Oracle+")
+
+        client.get_hero_stats.assert_awaited_with(
+            minimum_timestamp=patch_summary.published_at,
+            minimum_badge=81,
+            maximum_badge=None,
+            match_mode="ranked",
         )
 
     def test_wilson_interval_contains_observed_rate(self) -> None:

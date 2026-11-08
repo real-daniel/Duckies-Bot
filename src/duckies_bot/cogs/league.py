@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..features.league import LeagueService
-from ..features.league.formatter import build_item_analysis_embed, build_player_embed
+from ..features.league.formatter import build_analysis_embed, build_player_embed
 from ..providers.riot import PLATFORM_REGIONS, RiotAPIError
 from ..views.league_player import LeaguePlayerView
 
@@ -47,9 +47,9 @@ class LeagueCog(commands.Cog):
         self.bot = bot
         self.service = service
 
-    @league.command(name="ask", description="Compare items by champion, build slot, and rank")
+    @league.command(name="ask", description="Ask about champion or item performance by rank")
     @app_commands.describe(
-        question="Example: How good is IE 2nd item on Smolder compared to Shojin?",
+        question="Example: Is Smolder good in Emerald, or is IE second better than Shojin?",
         region="League platform to sample",
     )
     @app_commands.choices(
@@ -66,19 +66,19 @@ class LeagueCog(commands.Cog):
     ) -> None:
         await interaction.response.defer(thinking=True)
         try:
-            analysis = await self.service.answer_item_question(question, region)
+            analysis = await self.service.answer_question(question, region)
         except (ValueError, RiotAPIError) as exc:
             message = exc.user_message if isinstance(exc, RiotAPIError) else str(exc)
             await interaction.followup.send(message, ephemeral=True)
             return
         except Exception:
-            LOGGER.exception("Unexpected error during League item analysis")
+            LOGGER.exception("Unexpected error during League analytics")
             await interaction.followup.send(
-                "Something unexpected went wrong while analyzing that League item.",
+                "Something unexpected went wrong while analyzing that League question.",
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(embed=build_item_analysis_embed(analysis))
+        await interaction.followup.send(embed=build_analysis_embed(analysis))
 
     @league.command(name="player", description="View ranked stats and all-mode match history")
     @app_commands.describe(

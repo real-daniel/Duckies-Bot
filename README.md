@@ -10,14 +10,12 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   displayed match to open its detailed performance, build, combat, vision,
   objective, and full-team scoreboard statistics. Set `RIOT_API_KEY` on the bot
   host; the key is never sent to Discord clients.
-- `/league ask question:<text> region:<platform>` answers current-patch item questions,
-  including champion and completed core-item order: `How good is IE 2nd item on Smolder
-  compared to Shojin?`. It uses Riot Match-V5 timeline purchases; components and boots do
-  not count as core-item slots. Rank is optional and defaults to Emerald. Because Riot
-  does not publish aggregate item win rates, the bot clearly labels its bounded recent
-  Ranked Solo/Duo sample and limitations. When `OPENAI_API_KEY` is configured, GPT-6
-  Luna interprets flexible wording into validated fields before the Riot lookup; the
-  built-in parser remains available when Luna is not configured or temporarily fails.
+- `/league ask question:<text> region:<platform>` answers flexible current-patch champion
+  and item-performance questions, from `Is Smolder good in Emerald?` to `Is IE second on
+  Smolder better than Shojin?`. Luna converts natural language into a validated analytics
+  plan containing the subject type, comparison, champion context, item order, metrics,
+  match mode, and rank range. Riot Match-V5 supplies the bounded Ranked Solo/Duo sample;
+  components and boots do not count as core-item slots. Rank defaults to Emerald.
 
 - `/steam link steam_id:<id>` associates your Discord user with a SteamID64,
   SteamID3, SteamID2, or numeric Steam profile URL.
@@ -28,12 +26,11 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   by Steam name to get selectable avatar/profile cards, use an ID or numeric
   profile URL directly, select a linked Discord user, or omit both options to
   use your own linked account.
-- `/deadlock ask question:<text>` answers conversational item-performance questions such
-  as `Glass Cannon on Haze compared to Lucky Shot in Oracle?`. It resolves current hero,
-  item, and rank names, including common Discord-style typos, then compares current-patch
-  hero-specific purchase win rates. Deadlock comparisons intentionally do not infer a
-  purchase slot because its builds have many flexible item slots. GPT-6 Luna provides
-  the same optional natural-language interpretation used by the League command.
+- `/deadlock ask question:<text>` answers hero and item-performance questions such as
+  `Is Haze good in Oracle+?` or `Glass Cannon on Haze compared to Lucky Shot in Oracle?`.
+  The validated Luna plan routes to current-patch hero or item analytics with the requested
+  rank and match-mode filters. Deadlock item comparisons intentionally do not infer purchase
+  order because its builds have many flexible item slots.
 - `/deadlock scout match_id:<id-or-top-200> screenshot:<image>` is intended for the start of
   a match. Provide either the numeric ID or a full game screenshot; screenshot
   mode crops and reads only the bottom-right quadrant locally. It waits for the

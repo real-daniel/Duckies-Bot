@@ -1,4 +1,4 @@
-"""Shared structured interpretation for conversational item questions."""
+"""Structured meaning shared by conversational game-statistics questions."""
 
 from __future__ import annotations
 
@@ -7,36 +7,42 @@ from typing import Protocol
 
 
 @dataclass(frozen=True, slots=True)
-class InterpretedItemQuestion:
+class InterpretedAnalyticsQuestion:
+    """Provider-neutral query plan produced from one Discord question."""
+
     game: str
     intent: str
-    primary_item: str | None
-    comparison_item: str | None
-    character: str | None
+    subject_type: str
+    primary_subject: str | None
+    comparison_subject: str | None
+    character_context: str | None
     item_position: int | None
     minimum_rank: str | None
     maximum_rank: str | None
+    rank_scope: str
+    metrics: tuple[str, ...]
+    match_mode: str
     needs_clarification: bool
     clarification: str | None
     confidence: str
 
 
-class ItemQuestionInterpreter(Protocol):
+class AnalyticsQuestionInterpreter(Protocol):
     async def interpret(
         self, question: str, *, game: str
-    ) -> InterpretedItemQuestion: ...
+    ) -> InterpretedAnalyticsQuestion: ...
 
 
 class QuestionInterpreterUnavailableError(RuntimeError):
     """Raised when the optional interpretation provider cannot be reached."""
 
 
-def canonical_item_question(
-    interpreted: InterpretedItemQuestion,
+def validate_analytics_question(
+    interpreted: InterpretedAnalyticsQuestion,
     *,
     expected_game: str,
-) -> str:
-    """Turn validated structured meaning into the deterministic parser's grammar."""
+) -> InterpretedAnalyticsQuestion:
+    """Validate the model's query plan before it can influence API calls."""
     if interpreted.needs_clarification:
         raise ValueError(
             interpreted.clarification
@@ -44,28 +50,55 @@ def canonical_item_question(
         )
     if interpreted.game not in {expected_game, "unknown"}:
         raise ValueError(f"That looks like a {interpreted.game.title()} question.")
-    if interpreted.intent not in {"analyze_item", "compare_items"}:
-        raise ValueError("Ask about an item or compare two items.")
-    if not interpreted.primary_item:
-        raise ValueError("I could not identify the main item in that question.")
+    if interpreted.intent not in {"analyze", "compare"}:
+        raise ValueError("Ask me to analyze or compare a champion, hero, or item.")
+    if interpreted.subject_type not in {"item", "character"}:
+        raise ValueError("Ask about a champion, hero, or item that has recorded statistics.")
+    if not interpreted.primary_subject:
+        raise ValueError("I could not identify what you want analyzed.")
+    if interpreted.intent == "compare" and not interpreted.comparison_subject:
+        raise ValueError("Name both subjects you want compared.")
     if interpreted.item_position is not None and not 1 <= interpreted.item_position <= 6:
         raise ValueError("Item position must be between first and sixth.")
+    if interpreted.subject_type == "character" and interpreted.item_position is not None:
+        raise ValueError("Build position only applies to item questions.")
     if expected_game == "deadlock" and interpreted.item_position is not None:
         raise ValueError("Deadlock item analysis is hero-specific and does not use item order.")
+    if interpreted.rank_scope not in {"all", "exact", "range", "and_above"}:
+        raise ValueError("I could not understand the requested rank range.")
+    if interpreted.match_mode not in {"ranked", "unranked", "all"}:
+        raise ValueError("Match mode must be ranked, unranked, or all matches.")
+    return interpreted
 
-    parts = [interpreted.primary_item]
+
+def canonical_item_question(interpreted: InterpretedAnalyticsQuestion) -> str:
+    """Translate an item query plan into the existing catalog-aware parser grammar."""
+    if interpreted.subject_type != "item":
+        raise ValueError("This question is not about an item.")
+    parts = [interpreted.primary_subject or ""]
     if interpreted.item_position is not None:
         parts.append(f"{interpreted.item_position} item")
-    if interpreted.character:
-        parts.append(f"on {interpreted.character}")
-    if interpreted.comparison_item:
-        parts.append(f"compared to {interpreted.comparison_item}")
-    if interpreted.minimum_rank:
-        parts.append(interpreted.minimum_rank)
-    if (
-        interpreted.maximum_rank
-        and interpreted.maximum_rank.casefold()
-        != (interpreted.minimum_rank or "").casefold()
-    ):
-        parts.append(f"to {interpreted.maximum_rank}")
-    return " ".join(parts)
+    if interpreted.character_context:
+        parts.append(f"on {interpreted.character_context}")
+    if interpreted.comparison_subject:
+        parts.append(f"compared to {interpreted.comparison_subject}")
+    parts.extend(_rank_parts(interpreted))
+    return " ".join(part for part in parts if part)
+
+
+def canonical_rank_question(interpreted: InterpretedAnalyticsQuestion) -> str:
+    """Build rank-only text for the deterministic rank catalog parser."""
+    return " ".join(_rank_parts(interpreted))
+
+
+def _rank_parts(interpreted: InterpretedAnalyticsQuestion) -> list[str]:
+    if not interpreted.minimum_rank:
+        return []
+    if interpreted.rank_scope == "range" and interpreted.maximum_rank:
+        return [interpreted.minimum_rank, "to", interpreted.maximum_rank]
+    return [interpreted.minimum_rank]
+
+
+# Temporary compatibility names for callers outside the package.
+InterpretedItemQuestion = InterpretedAnalyticsQuestion
+ItemQuestionInterpreter = AnalyticsQuestionInterpreter

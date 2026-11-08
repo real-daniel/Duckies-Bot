@@ -13,6 +13,7 @@ from ...features.deadlock.models import (
     ActiveMatch,
     ActivePlayer,
     HeroExperience,
+    HeroStats,
     HeroSummary,
     ItemSummary,
     ItemStats,
@@ -119,8 +120,8 @@ class DeadlockClient:
     ) -> tuple[ItemStats, ...]:
         if minimum_timestamp <= 0:
             raise ValueError("minimum_timestamp must be positive")
-        if match_mode not in {"ranked", "unranked"}:
-            raise ValueError("match_mode must be ranked or unranked")
+        if match_mode not in {"ranked", "unranked", "ranked,unranked"}:
+            raise ValueError("match_mode must be ranked, unranked, or ranked,unranked")
         params = {
             "game_mode": "normal",
             "match_mode": match_mode,
@@ -164,6 +165,56 @@ class DeadlockClient:
                     average_sell_time_seconds=_optional_number(raw.get("avg_sell_time_s")),
                 )
             )
+        return tuple(results)
+
+    async def get_hero_stats(
+        self,
+        *,
+        minimum_timestamp: int,
+        minimum_badge: int | None = None,
+        maximum_badge: int | None = None,
+        match_mode: str = "ranked",
+    ) -> tuple[HeroStats, ...]:
+        """Return global hero performance for a period and optional rank range."""
+        if minimum_timestamp <= 0:
+            raise ValueError("minimum_timestamp must be positive")
+        if match_mode not in {"ranked", "unranked", "ranked,unranked"}:
+            raise ValueError("match_mode must be ranked, unranked, or ranked,unranked")
+        params = {
+            "bucket": "no_bucket",
+            "game_mode": "normal",
+            "match_mode": match_mode,
+            "min_unix_timestamp": str(minimum_timestamp),
+        }
+        if minimum_badge is not None:
+            params["min_average_badge"] = str(minimum_badge)
+        if maximum_badge is not None:
+            params["max_average_badge"] = str(maximum_badge)
+        document = await self._get_json("/v1/analytics/hero-stats", params=params)
+        if not isinstance(document, list):
+            raise InvalidDeadlockResponseError()
+        results: list[HeroStats] = []
+        for raw in document:
+            if not isinstance(raw, Mapping):
+                continue
+            hero_id = _optional_int(raw.get("hero_id"))
+            wins = _optional_int(raw.get("wins"))
+            losses = _optional_int(raw.get("losses"))
+            matches = _optional_int(raw.get("matches"))
+            bucket_matches = _optional_int(raw.get("bucket_matches_since_first_day"))
+            if None in (hero_id, wins, losses, matches, bucket_matches):
+                continue
+            results.append(HeroStats(
+                hero_id=int(hero_id),
+                wins=int(wins),
+                losses=int(losses),
+                matches=int(matches),
+                bucket_matches_since_first_day=int(bucket_matches),
+                total_kills=_optional_int(raw.get("total_kills")) or 0,
+                total_deaths=_optional_int(raw.get("total_deaths")) or 0,
+                total_assists=_optional_int(raw.get("total_assists")) or 0,
+                total_player_damage=_optional_int(raw.get("total_player_damage")) or 0,
+            ))
         return tuple(results)
 
     async def get_latest_gameplay_patch(self) -> PatchSummary:

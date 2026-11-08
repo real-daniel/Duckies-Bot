@@ -9,12 +9,81 @@ import discord
 
 from ...presentation import field_name, finish_embed, make_embed
 from .models import (
+    LeagueChampionAnalysis,
     LeagueItemAnalysis,
     LeagueMatch,
     LeaguePlayerLookup,
     MatchParticipant,
     RankedEntry,
 )
+
+
+def build_analysis_embed(
+    analysis: LeagueItemAnalysis | LeagueChampionAnalysis,
+) -> discord.Embed:
+    if isinstance(analysis, LeagueChampionAnalysis):
+        return build_champion_analysis_embed(analysis)
+    return build_item_analysis_embed(analysis)
+
+
+def build_champion_analysis_embed(analysis: LeagueChampionAnalysis) -> discord.Embed:
+    stats = analysis.stats
+    win_rate = stats.win_rate or 0.0
+    delta = analysis.win_rate_delta
+    tone = "success" if delta is not None and delta >= 0.03 else (
+        "danger" if delta is not None and delta <= -0.03 else "info"
+    )
+    comparison = (
+        f" compared with **{analysis.comparison_champion.name}**"
+        if analysis.comparison_champion else ""
+    )
+    embed = make_embed(
+        f"{analysis.champion.name} — {analysis.verdict}",
+        (
+            f"In a **{analysis.rank_label}** current-patch ranked sample from "
+            f"**{analysis.platform}**, **{analysis.champion.name}** won "
+            f"**{win_rate:.1%}** of recorded games{comparison}."
+        ),
+        tone=tone,
+    )
+    embed.add_field(
+        name=field_name("Sampled performance"),
+        value=(
+            f"**{stats.wins:,}W–{stats.losses:,}L** · {stats.matches:,} champion games\n"
+            f"Player share **{(stats.player_share or 0):.1%}** · aggregate KDA **{(stats.kda or 0):.2f}**\n"
+            f"Scanned **{stats.games_scanned:,} matches** and **{stats.players_scanned:,} players**"
+        ),
+        inline=False,
+    )
+    baseline = (
+        analysis.comparison_stats.win_rate
+        if analysis.comparison_stats else analysis.field_win_rate
+    )
+    if baseline is not None and delta is not None:
+        label = analysis.comparison_champion.name if analysis.comparison_champion else "sampled champion median"
+        embed.add_field(
+            name=field_name("Comparison"),
+            value=(
+                f"{label}: **{baseline:.1%}** win rate. "
+                f"{analysis.champion.name} is **{abs(delta):.1%} "
+                f"{'above' if delta >= 0 else 'below'}** that baseline."
+            ),
+            inline=False,
+        )
+    embed.add_field(
+        name=field_name("Important limitation"),
+        value="This is a bounded Riot ladder sample, not a census. Small champion samples can move sharply.",
+        inline=False,
+    )
+    if analysis.champion.icon_url:
+        embed.set_thumbnail(url=analysis.champion.icon_url)
+    finish_embed(
+        embed,
+        "League champion analysis",
+        source="Riot Games API",
+        context=f"Ranked Solo/Duo sample · patch {analysis.data_dragon_version}",
+    )
+    return embed
 
 
 def build_item_analysis_embed(analysis: LeagueItemAnalysis) -> discord.Embed:

@@ -9,6 +9,7 @@ import discord
 
 from ..accounts.steam import STEAM_ID64_OFFSET
 from .models import (
+    HeroAnalysis,
     ItemAnalysis,
     LiveMatchSnapshot,
     LivePlayer,
@@ -18,6 +19,73 @@ from .models import (
     SteamProfile,
 )
 from ...presentation import field_name, finish_embed, make_embed
+
+
+def build_analysis_embed(analysis: ItemAnalysis | HeroAnalysis) -> discord.Embed:
+    if isinstance(analysis, HeroAnalysis):
+        return build_hero_analysis_embed(analysis)
+    return build_item_analysis_embed(analysis)
+
+
+def build_hero_analysis_embed(analysis: HeroAnalysis) -> discord.Embed:
+    stats = analysis.stats
+    win_rate = stats.win_rate or 0.0
+    delta = analysis.win_rate_delta
+    tone = "success" if delta is not None and delta >= 0.03 else (
+        "danger" if delta is not None and delta <= -0.03 else "info"
+    )
+    comparison = (
+        f" compared with **{analysis.comparison_hero.name}**"
+        if analysis.comparison_hero else ""
+    )
+    embed = make_embed(
+        f"{analysis.hero.name} — {analysis.verdict}",
+        (
+            f"In **{analysis.rank_label}** matches on the current patch, "
+            f"**{analysis.hero.name}** won **{win_rate:.1%}** of recorded games{comparison}."
+        ),
+        tone=tone,
+        url=analysis.patch.link,
+    )
+    embed.add_field(
+        name=field_name("Recorded performance"),
+        value=(
+            f"**{stats.wins:,}W–{stats.losses:,}L** · {stats.matches:,} hero games\n"
+            f"Estimated pick rate **{(stats.pick_rate or 0):.1%}** · aggregate KDA **{(stats.kda or 0):.2f}**"
+        ),
+        inline=False,
+    )
+    baseline = (
+        analysis.comparison_stats.win_rate
+        if analysis.comparison_stats else analysis.field_win_rate
+    )
+    if baseline is not None and delta is not None:
+        label = analysis.comparison_hero.name if analysis.comparison_hero else "hero median"
+        embed.add_field(
+            name=field_name("Comparison"),
+            value=(
+                f"{label}: **{baseline:.1%}** win rate. {analysis.hero.name} is "
+                f"**{abs(delta):.1%} {'above' if delta >= 0 else 'below'}** that baseline."
+            ),
+            inline=False,
+        )
+    embed.add_field(
+        name=field_name("How to read this"),
+        value="These are aggregate match results. They describe correlation for this rank filter, not individual player skill.",
+        inline=False,
+    )
+    if analysis.hero.icon_url:
+        embed.set_thumbnail(url=analysis.hero.icon_url)
+    finish_embed(
+        embed,
+        "Deadlock hero analysis",
+        source="Deadlock API",
+        context=(
+            f"{analysis.patch.title} · since "
+            f"{datetime.fromtimestamp(analysis.patch.published_at, UTC):%Y-%m-%d}"
+        ),
+    )
+    return embed
 
 
 def build_item_analysis_embed(analysis: ItemAnalysis) -> discord.Embed:
