@@ -105,6 +105,96 @@ class ItemAnalysis:
 
 
 @dataclass(frozen=True, slots=True)
+class HeroStats:
+    hero_id: int
+    wins: int
+    losses: int
+    matches: int
+    bucket_matches_since_first_day: int
+    total_kills: int = 0
+    total_deaths: int = 0
+    total_assists: int = 0
+    total_player_damage: int = 0
+
+    @property
+    def win_rate(self) -> float | None:
+        return self.wins / self.matches if self.matches else None
+
+    @property
+    def pick_rate(self) -> float | None:
+        if not self.bucket_matches_since_first_day:
+            return None
+        return min(1.0, self.matches * 12 / self.bucket_matches_since_first_day)
+
+    @property
+    def kda(self) -> float | None:
+        return (self.total_kills + self.total_assists) / max(self.total_deaths, 1)
+
+
+@dataclass(frozen=True, slots=True)
+class HeroRelationshipStats:
+    hero_id: int
+    related_hero_id: int
+    wins: int
+    matches: int
+
+    @property
+    def win_rate(self) -> float | None:
+        return self.wins / self.matches if self.matches else None
+
+
+@dataclass(frozen=True, slots=True)
+class HeroAnalysis:
+    hero: HeroSummary
+    stats: HeroStats
+    patch: PatchSummary
+    rank_label: str
+    minimum_badge: int | None
+    maximum_badge: int | None
+    field_win_rate: float | None
+    verdict: str
+    comparison_hero: HeroSummary | None = None
+    comparison_stats: HeroStats | None = None
+
+    @property
+    def win_rate_delta(self) -> float | None:
+        baseline = (
+            self.comparison_stats.win_rate
+            if self.comparison_stats is not None
+            else self.field_win_rate
+        )
+        if self.stats.win_rate is None or baseline is None:
+            return None
+        return self.stats.win_rate - baseline
+
+
+@dataclass(frozen=True, slots=True)
+class RankedInsight:
+    entity_id: int
+    name: str
+    icon_url: str | None
+    wins: int
+    matches: int
+    pick_rate: float | None = None
+
+    @property
+    def win_rate(self) -> float | None:
+        return self.wins / self.matches if self.matches else None
+
+
+@dataclass(frozen=True, slots=True)
+class RankedInsightsAnalysis:
+    category: str
+    subject_name: str | None
+    entries: tuple[RankedInsight, ...]
+    patch: PatchSummary
+    rank_label: str
+    minimum_badge: int | None
+    maximum_badge: int | None
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
 class StatueBuff:
     """One permanent golden-statue modifier observed in the live demo."""
 

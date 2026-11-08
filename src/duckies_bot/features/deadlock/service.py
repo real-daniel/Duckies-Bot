@@ -8,20 +8,26 @@ import random
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
+from statistics import median
 
 from .analytics import (
     comparable_win_rate,
     item_verdict,
     parse_item_question,
+    parse_rank_filter,
+    resolve_hero,
     wilson_interval,
 )
 from ..item_questions import (
     ItemQuestionInterpreter,
     QuestionInterpreterUnavailableError,
     canonical_item_question,
+    canonical_rank_question,
+    validate_analytics_question,
 )
 from .models import (
     HeroExperience,
+    HeroAnalysis,
     HeroRecord,
     HeroSummary,
     ItemSummary,
@@ -34,6 +40,8 @@ from .models import (
     PlayerLookup,
     PlayerRank,
     RankAsset,
+    RankedInsight,
+    RankedInsightsAnalysis,
     PatchSummary,
     ScoutedPlayer,
     SteamProfile,
@@ -57,6 +65,33 @@ _LIVE_STREAM_STARTUP_ATTEMPTS = 2
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _performance_verdict(
+    win_rate: float | None,
+    baseline: float | None,
+    matches: int,
+) -> str:
+    if win_rate is None or baseline is None or matches < 20:
+        return "Too little data"
+    delta = win_rate - baseline
+    if delta >= 0.03:
+        return "Strong for this filter"
+    if delta <= -0.03:
+        return "Below the field"
+    return "Around the field average"
+
+
+def _rank_insights(entries, interpretation) -> tuple[RankedInsight, ...]:
+    if interpretation.sort_by in {"popularity", "matches", "pick_rate"}:
+        key = lambda entry: (entry.pick_rate or 0.0, entry.matches)
+    else:
+        key = lambda entry: (entry.win_rate or 0.0, entry.matches)
+    return tuple(sorted(
+        entries,
+        key=key,
+        reverse=interpretation.sort_direction == "high",
+    )[: interpretation.result_limit])
 
 
 class DeadlockService:
@@ -91,7 +126,7 @@ class DeadlockService:
         self._item_icon_cache: dict[int, _CachedAssetIcon] = {}
         self._item_icon_locks: dict[int, asyncio.Lock] = {}
         self._item_stats_cache: dict[
-            tuple[int, int | None, int | None, int | None], _CachedItemStats
+            tuple[int, int | None, int | None, int | None, str], _CachedItemStats
         ] = {}
         self._patch_cache: _CachedPatch | None = None
         self._asset_icon_limit = asyncio.Semaphore(8)
@@ -118,6 +153,51 @@ class DeadlockService:
         return await self.client.search_steam_profiles(query, limit=limit)
 
     async def answer_item_question(self, question: str) -> ItemAnalysis:
+        result = await self.answer_question(question)
+        if not isinstance(result, ItemAnalysis):
+            raise ValueError("That question asks about a hero rather than an item.")
+        return result
+
+    async def answer_question(
+        self, question: str
+    ) -> ItemAnalysis | HeroAnalysis | RankedInsightsAnalysis:
+        """Interpret and route a flexible current-patch analytics question."""
+        if self.question_interpreter is None:
+            return await self._answer_item_question(question)
+        try:
+            interpretation = await self.question_interpreter.interpret(
+                question, game="deadlock"
+            )
+        except QuestionInterpreterUnavailableError:
+            LOGGER.warning(
+                "OpenAI question interpretation unavailable; using Deadlock parser",
+                exc_info=True,
+            )
+            return await self._answer_item_question(question)
+        interpretation = validate_analytics_question(
+            interpretation, expected_game="deadlock"
+        )
+        if interpretation.intent == "rank":
+            return await self._answer_meta_ranking(interpretation)
+        if interpretation.intent == "recommend":
+            return await self._answer_item_recommendations(interpretation)
+        if interpretation.intent in {"matchup", "synergy"}:
+            return await self._answer_hero_relationship(interpretation)
+        if interpretation.subject_type == "character":
+            return await self._answer_hero_question(interpretation)
+        return await self._answer_item_question(
+            canonical_item_question(interpretation),
+            rank_and_above=interpretation.rank_scope == "and_above",
+            match_mode=interpretation.match_mode,
+        )
+
+    async def _answer_item_question(
+        self,
+        question: str,
+        *,
+        rank_and_above: bool = False,
+        match_mode: str = "ranked",
+    ) -> ItemAnalysis:
         """Answer a conversational item-strength question with current-patch data."""
         items, ranks, patch, heroes = await asyncio.gather(
             self._get_item_catalog(),
@@ -129,27 +209,26 @@ class DeadlockService:
             raise DeadlockAPIError(
                 "The current Deadlock item or rank catalog is unavailable. Try again shortly."
             )
-        interpreted_question = question
-        if self.question_interpreter is not None:
-            try:
-                interpretation = await self.question_interpreter.interpret(
-                    question, game="deadlock"
-                )
-            except QuestionInterpreterUnavailableError:
-                LOGGER.warning(
-                    "OpenAI question interpretation unavailable; using Deadlock parser",
-                    exc_info=True,
-                )
-            else:
-                interpreted_question = canonical_item_question(
-                    interpretation, expected_game="deadlock"
-                )
-        parsed = parse_item_question(interpreted_question, items, ranks, heroes)
+        parsed = parse_item_question(question, items, ranks, heroes)
+        if rank_and_above:
+            rank_filter = parse_rank_filter(question, ranks, and_above=True)
+            parsed = replace(
+                parsed,
+                minimum_badge=rank_filter.minimum_badge,
+                maximum_badge=rank_filter.maximum_badge,
+                rank_label=rank_filter.rank_label,
+            )
+        api_match_mode = {
+            "ranked": "ranked",
+            "unranked": "unranked",
+            "all": "ranked,unranked",
+        }[match_mode]
         stats = await self._get_item_stats(
             patch,
             parsed.minimum_badge,
             parsed.maximum_badge,
             parsed.hero.hero_id if parsed.hero else None,
+            api_match_mode,
         )
         target = next((row for row in stats if row.item_id == parsed.item.item_id), None)
         if target is None:
@@ -196,6 +275,272 @@ class DeadlockService:
             hero=parsed.hero,
             comparison_item=parsed.comparison_item,
             comparison_stats=comparison_stats,
+        )
+
+    async def _answer_hero_question(self, interpretation) -> HeroAnalysis:
+        heroes, ranks, patch = await asyncio.gather(
+            self._get_hero_catalog(),
+            self._get_rank_assets(),
+            self._get_latest_patch(),
+        )
+        hero = resolve_hero(interpretation.primary_subject or "", heroes)
+        if hero is None:
+            raise ValueError(f"I could not find a Deadlock hero matching {interpretation.primary_subject!r}.")
+        comparison_hero = None
+        if interpretation.comparison_subject:
+            comparison_hero = resolve_hero(interpretation.comparison_subject, heroes)
+            if comparison_hero is None:
+                raise ValueError(
+                    f"I could not find a Deadlock hero matching {interpretation.comparison_subject!r}."
+                )
+        rank_filter = parse_rank_filter(
+            canonical_rank_question(interpretation),
+            ranks,
+            and_above=interpretation.rank_scope == "and_above",
+        )
+        match_mode = {
+            "ranked": "ranked",
+            "unranked": "unranked",
+            "all": "ranked,unranked",
+        }[interpretation.match_mode]
+        loader = getattr(self.client, "get_hero_stats", None)
+        if loader is None:
+            raise DeadlockAPIError("Deadlock hero analytics are unavailable right now.")
+        rows = await loader(
+            minimum_timestamp=patch.published_at,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            match_mode=match_mode,
+        )
+        target = next((row for row in rows if row.hero_id == hero.hero_id), None)
+        if target is None:
+            raise ValueError(
+                f"No current-patch {hero.name} matches were recorded for {rank_filter.rank_label}."
+            )
+        comparison_stats = (
+            next((row for row in rows if row.hero_id == comparison_hero.hero_id), None)
+            if comparison_hero else None
+        )
+        if comparison_hero is not None and comparison_stats is None:
+            raise ValueError(
+                f"No current-patch {comparison_hero.name} matches were recorded for that filter."
+            )
+        field_rates = [row.win_rate for row in rows if row.win_rate is not None]
+        field_rate = median(field_rates) if field_rates else None
+        baseline = comparison_stats.win_rate if comparison_stats else field_rate
+        verdict = _performance_verdict(target.win_rate, baseline, target.matches)
+        return HeroAnalysis(
+            hero=hero,
+            stats=target,
+            patch=patch,
+            rank_label=rank_filter.rank_label,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            field_win_rate=field_rate,
+            verdict=verdict,
+            comparison_hero=comparison_hero,
+            comparison_stats=comparison_stats,
+        )
+
+    async def _analytics_context(self, interpretation):
+        heroes, ranks, patch = await asyncio.gather(
+            self._get_hero_catalog(),
+            self._get_rank_assets(),
+            self._get_latest_patch(),
+        )
+        rank_filter = parse_rank_filter(
+            canonical_rank_question(interpretation),
+            ranks,
+            and_above=interpretation.rank_scope == "and_above",
+        )
+        match_mode = {
+            "ranked": "ranked",
+            "unranked": "unranked",
+            "all": "ranked,unranked",
+        }[interpretation.match_mode]
+        return heroes, patch, rank_filter, match_mode
+
+    async def _answer_meta_ranking(self, interpretation) -> RankedInsightsAnalysis:
+        heroes, patch, rank_filter, match_mode = await self._analytics_context(
+            interpretation
+        )
+        rows = await self.client.get_hero_stats(
+            minimum_timestamp=patch.published_at,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            match_mode=match_mode,
+        )
+        catalog = {hero.hero_id: hero for hero in heroes}
+        entries = tuple(
+            RankedInsight(
+                row.hero_id,
+                hero.name,
+                hero.icon_url,
+                row.wins,
+                row.matches,
+                row.pick_rate,
+            )
+            for row in rows
+            if row.matches >= 20 and (hero := catalog.get(row.hero_id)) is not None
+        )
+        selected = _rank_insights(entries, interpretation)
+        return RankedInsightsAnalysis(
+            category="Hero meta",
+            subject_name=None,
+            entries=selected,
+            patch=patch,
+            rank_label=rank_filter.rank_label,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            description="Current-patch heroes ranked from aggregate match results.",
+        )
+
+    async def _answer_item_recommendations(self, interpretation) -> RankedInsightsAnalysis:
+        heroes, patch, rank_filter, match_mode = await self._analytics_context(
+            interpretation
+        )
+        hero = resolve_hero(interpretation.character_context or "", heroes)
+        if hero is None:
+            raise ValueError(
+                f"I could not find a Deadlock hero matching {interpretation.character_context!r}."
+            )
+        items = await self._get_item_catalog()
+        rows, hero_rows = await asyncio.gather(
+            self._get_item_stats(
+                patch,
+                rank_filter.minimum_badge,
+                rank_filter.maximum_badge,
+                hero.hero_id,
+                match_mode,
+            ),
+            self.client.get_hero_stats(
+                minimum_timestamp=patch.published_at,
+                minimum_badge=rank_filter.minimum_badge,
+                maximum_badge=rank_filter.maximum_badge,
+                match_mode=match_mode,
+            ),
+        )
+        catalog = {item.item_id: item for item in items}
+        hero_matches = next(
+            (row.matches for row in hero_rows if row.hero_id == hero.hero_id), 0
+        )
+        entries = tuple(
+            RankedInsight(
+                row.item_id,
+                item.name,
+                item.icon_url,
+                row.wins,
+                row.matches,
+                min(1.0, row.matches / hero_matches) if hero_matches else None,
+            )
+            for row in rows
+            if row.matches >= 20
+            and (item := catalog.get(row.item_id)) is not None
+            and item.shopable
+        )
+        selected = _rank_insights(entries, interpretation)
+        return RankedInsightsAnalysis(
+            category="Item recommendations",
+            subject_name=hero.name,
+            entries=selected,
+            patch=patch,
+            rank_label=rank_filter.rank_label,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            description=(
+                "Hero-filtered purchases ranked by observed results; expensive late-game "
+                "items have survivorship bias."
+            ),
+        )
+
+    async def _answer_hero_relationship(self, interpretation) -> RankedInsightsAnalysis:
+        heroes, patch, rank_filter, match_mode = await self._analytics_context(
+            interpretation
+        )
+        hero = resolve_hero(interpretation.primary_subject or "", heroes)
+        if hero is None:
+            raise ValueError(
+                f"I could not find a Deadlock hero matching {interpretation.primary_subject!r}."
+            )
+        comparison = None
+        if interpretation.comparison_subject:
+            comparison = resolve_hero(interpretation.comparison_subject, heroes)
+            if comparison is None:
+                raise ValueError(
+                    f"I could not find a Deadlock hero matching {interpretation.comparison_subject!r}."
+                )
+        filters = dict(
+            minimum_timestamp=patch.published_at,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            match_mode=match_mode,
+            same_lane=interpretation.lane_scope == "same_lane",
+            minimum_matches=5,
+        )
+        if interpretation.intent == "matchup":
+            rows = await self.client.get_hero_counter_stats(**filters)
+            category = "Counters and matchups"
+        else:
+            rows = await self.client.get_hero_synergy_stats(**filters)
+            category = "Hero synergies"
+        catalog = {candidate.hero_id: candidate for candidate in heroes}
+        built_entries = []
+        for row in rows:
+            if row.hero_id == hero.hero_id:
+                related_id = row.related_hero_id
+                subject_wins = row.wins
+            elif row.related_hero_id == hero.hero_id:
+                related_id = row.hero_id
+                subject_wins = (
+                    row.wins
+                    if interpretation.intent == "synergy"
+                    else row.matches - row.wins
+                )
+            else:
+                continue
+            if comparison is not None and related_id != comparison.hero_id:
+                continue
+            related = catalog.get(related_id)
+            if related is None:
+                continue
+            built_entries.append(RankedInsight(
+                related_id,
+                related.name,
+                related.icon_url,
+                subject_wins,
+                row.matches,
+            ))
+        entries = tuple(built_entries)
+        if not entries:
+            raise ValueError(
+                f"No current-patch {category.casefold()} data was recorded for {hero.name} and that filter."
+            )
+        if comparison is not None:
+            selected = entries[:1]
+        elif interpretation.intent == "matchup":
+            selected = tuple(sorted(
+                entries,
+                key=lambda entry: (entry.win_rate if entry.win_rate is not None else 1.0),
+            )[: interpretation.result_limit])
+        else:
+            selected = tuple(sorted(
+                entries,
+                key=lambda entry: (entry.win_rate or 0.0, entry.matches),
+                reverse=True,
+            )[: interpretation.result_limit])
+        return RankedInsightsAnalysis(
+            category=category,
+            subject_name=hero.name,
+            entries=selected,
+            patch=patch,
+            rank_label=rank_filter.rank_label,
+            minimum_badge=rank_filter.minimum_badge,
+            maximum_badge=rank_filter.maximum_badge,
+            description=(
+                "Lowest subject win rates appear first for counters."
+                if interpretation.intent == "matchup" and comparison is None
+                else "Pair results from matches where both heroes appeared."
+            ),
         )
 
     async def player_lookup(
@@ -873,18 +1218,28 @@ class DeadlockService:
         minimum_badge: int | None,
         maximum_badge: int | None,
         hero_id: int | None = None,
+        match_mode: str = "ranked",
     ) -> tuple[ItemStats, ...]:
-        key = (patch.published_at, minimum_badge, maximum_badge, hero_id)
+        key = (patch.published_at, minimum_badge, maximum_badge, hero_id, match_mode)
         now = time.monotonic()
         cached = self._item_stats_cache.get(key)
         if cached is not None and cached.expires_at > now:
             return cached.stats
-        stats = await self.client.get_item_stats(
-            minimum_timestamp=patch.published_at,
-            minimum_badge=minimum_badge,
-            maximum_badge=maximum_badge,
-            hero_id=hero_id,
-        )
+        if match_mode == "ranked":
+            stats = await self.client.get_item_stats(
+                minimum_timestamp=patch.published_at,
+                minimum_badge=minimum_badge,
+                maximum_badge=maximum_badge,
+                hero_id=hero_id,
+            )
+        else:
+            stats = await self.client.get_item_stats(
+                minimum_timestamp=patch.published_at,
+                minimum_badge=minimum_badge,
+                maximum_badge=maximum_badge,
+                hero_id=hero_id,
+                match_mode=match_mode,
+            )
         self._item_stats_cache[key] = _CachedItemStats(now + 15 * 60, stats)
         return stats
 

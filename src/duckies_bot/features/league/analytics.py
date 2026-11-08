@@ -50,6 +50,12 @@ class LeagueItemQuestion:
     comparison_item: LeagueItem | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LeagueRankFilter:
+    buckets: tuple[LeagueRankBucket, ...]
+    rank_label: str
+
+
 def parse_league_item_question(
     question: str,
     items: tuple[LeagueItem, ...],
@@ -67,27 +73,43 @@ def parse_league_item_question(
     comparison_item = (
         _resolve_item(comparison_text, items)[0] if comparison_text is not None else None
     )
-    champion = _resolve_champion(question, champions) if champions else None
+    champion = resolve_champion(question, champions) if champions else None
     item_position = _item_position(question)
     if item_position is not None and champion is None and champions:
         raise ValueError("Include a champion for an item-slot question, such as: on Smolder.")
     if comparison_item is not None and champion is None and champions:
         raise ValueError("Include a champion for an item comparison, such as: on Smolder.")
-    ranks = _rank_mentions(question, item_span)
+    rank_filter = parse_rank_filter(question, ignored_span=item_span)
+    return LeagueItemQuestion(
+        item,
+        rank_filter.buckets,
+        rank_filter.rank_label,
+        champion,
+        item_position,
+        comparison_item,
+    )
+
+
+def parse_rank_filter(
+    question: str,
+    *,
+    ignored_span: tuple[int, int] = (-1, -1),
+    and_above: bool = False,
+) -> LeagueRankFilter:
+    """Resolve ranked ladder buckets independently of the analyzed subject."""
+    ranks = _rank_mentions(question, ignored_span)
     if not ranks:
-        return LeagueItemQuestion(
-            item,
+        return LeagueRankFilter(
             (LeagueRankBucket("EMERALD", "II"),),
             "Emerald (default)",
-            champion,
-            item_position,
-            comparison_item,
         )
 
     first = ranks[0]
     last = ranks[-1]
     if first[1] > last[1]:
         first, last = last, first
+    if and_above:
+        last = (last[0], min(first[1] + 1, len(TIERS) - 1), None)
     if last[1] - first[1] > 1:
         raise ValueError("Keep League rank ranges to one or two adjacent tiers.")
 
@@ -112,9 +134,9 @@ def parse_league_item_question(
     first_label = _rank_label(TIERS[first[1]], first[2])
     last_label = _rank_label(TIERS[last[1]], last[2])
     rank_label = first_label if first_label == last_label else f"{first_label}–{last_label}"
-    return LeagueItemQuestion(
-        item, tuple(buckets), rank_label, champion, item_position, comparison_item
-    )
+    if and_above:
+        rank_label = f"{first_label}+ (two-tier sample)"
+    return LeagueRankFilter(tuple(buckets), rank_label)
 
 
 def aggregate_item_stats(
@@ -183,7 +205,7 @@ def _item_position(question: str) -> int | None:
     return words.get(value, int(value[0]) if value[0].isdigit() else 0) or None
 
 
-def _resolve_champion(
+def resolve_champion(
     question: str, champions: tuple[LeagueChampion, ...]
 ) -> LeagueChampion | None:
     normalized = _normalize(question)

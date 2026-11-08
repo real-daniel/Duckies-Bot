@@ -24,6 +24,13 @@ class ItemQuestion:
     rank_label: str
 
 
+@dataclass(frozen=True, slots=True)
+class DeadlockRankFilter:
+    minimum_badge: int | None
+    maximum_badge: int | None
+    rank_label: str
+
+
 def parse_item_question(
     question: str,
     items: tuple[ItemSummary, ...],
@@ -42,8 +49,27 @@ def parse_item_question(
     comparison_item = (
         _resolve_item(comparison_text, items)[0] if comparison_text is not None else None
     )
-    hero = _resolve_hero(question, heroes) if heroes else None
+    hero = resolve_hero(question, heroes) if heroes else None
 
+    rank_filter = parse_rank_filter(question, ranks, ignored_span=item_span)
+    return ItemQuestion(
+        item,
+        comparison_item,
+        hero,
+        rank_filter.minimum_badge,
+        rank_filter.maximum_badge,
+        rank_filter.rank_label,
+    )
+
+
+def parse_rank_filter(
+    question: str,
+    ranks: tuple[RankAsset, ...],
+    *,
+    ignored_span: tuple[int, int] = (-1, -1),
+    and_above: bool = False,
+) -> DeadlockRankFilter:
+    """Resolve rank text independently of any item or hero subject."""
     mentioned: list[tuple[int, int, int | None, str]] = []
     lowered = question.casefold()
     for rank in ranks:
@@ -52,7 +78,7 @@ def parse_item_question(
             r"(?:\s*(iii|ii|iv|vi|i|v|[1-6]))?\b"
         )
         for match in re.finditer(pattern, lowered):
-            if item_span[0] <= match.start() < item_span[1]:
+            if ignored_span[0] <= match.start() < ignored_span[1]:
                 continue
             subrank_text = match.group(1)
             mentioned.append(
@@ -63,15 +89,21 @@ def parse_item_question(
                     rank.name,
                 )
             )
-    mentioned.extend(_fuzzy_rank_mentions(question, ranks, item_span, mentioned))
+    mentioned.extend(_fuzzy_rank_mentions(question, ranks, ignored_span, mentioned))
     mentioned.sort()
     if not mentioned:
-        return ItemQuestion(item, comparison_item, hero, None, None, "all ranks")
+        return DeadlockRankFilter(None, None, "all ranks")
 
     first = mentioned[0]
     last = mentioned[-1]
     minimum_badge = _badge(first[1], first[2] or 1)
-    maximum_badge = _badge(last[1], last[2] or 6)
+    maximum_badge = None if and_above else _badge(last[1], last[2] or 6)
+    if maximum_badge is None:
+        return DeadlockRankFilter(
+            minimum_badge,
+            None,
+            f"{_rank_label(first[3], first[2])}+",
+        )
     if minimum_badge > maximum_badge:
         minimum_badge, maximum_badge = maximum_badge, minimum_badge
         first, last = last, first
@@ -79,9 +111,7 @@ def parse_item_question(
     first_label = _rank_label(first[3], first[2])
     last_label = _rank_label(last[3], last[2])
     rank_label = first_label if first_label == last_label else f"{first_label}–{last_label}"
-    return ItemQuestion(
-        item, comparison_item, hero, minimum_badge, maximum_badge, rank_label
-    )
+    return DeadlockRankFilter(minimum_badge, maximum_badge, rank_label)
 
 
 def _comparison_parts(question: str) -> tuple[str, str | None]:
@@ -100,7 +130,7 @@ def _comparison_parts(question: str) -> tuple[str, str | None]:
     return left, right
 
 
-def _resolve_hero(question: str, heroes: tuple[HeroSummary, ...]) -> HeroSummary | None:
+def resolve_hero(question: str, heroes: tuple[HeroSummary, ...]) -> HeroSummary | None:
     lowered = _normalize(question)
     exact = [
         hero

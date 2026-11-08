@@ -21,7 +21,7 @@ from ..features.deadlock import (
     sample_scout_template,
 )
 from ..features.deadlock.formatter import (
-    build_item_analysis_embed,
+    build_analysis_embed,
     build_live_match_embed,
     build_player_lookup_embed,
     build_player_search_embeds,
@@ -234,14 +234,14 @@ class DeadlockCog(commands.Cog):
             for profile in profiles[:25]
         ]
 
-    @deadlock.command(name="ask", description="Compare current-patch items for a hero and rank")
+    @deadlock.command(name="ask", description="Ask about meta, counters, synergies, heroes, or items")
     @app_commands.describe(
-        question="Example: Glass Cannon on Haze compared to Lucky Shot in Oracle?",
+        question="Example: Who counters Haze in Oracle+, or what items work best on Haze?",
     )
     async def ask(self, interaction: discord.Interaction, question: str) -> None:
         await interaction.response.defer(thinking=True)
         try:
-            analysis = await self.service.answer_item_question(question)
+            analysis = await self.service.answer_question(question)
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             return
@@ -249,13 +249,13 @@ class DeadlockCog(commands.Cog):
             await interaction.followup.send(exc.user_message, ephemeral=True)
             return
         except Exception:
-            LOGGER.exception("Unexpected error during Deadlock item analysis")
+            LOGGER.exception("Unexpected error during Deadlock analytics")
             await interaction.followup.send(
-                "Something unexpected went wrong while analyzing that item.",
+                "Something unexpected went wrong while analyzing that question.",
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(embed=build_item_analysis_embed(analysis))
+        await interaction.followup.send(embed=build_analysis_embed(analysis))
 
     async def _retry_player_lookup(
         self,

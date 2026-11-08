@@ -22,6 +22,9 @@ from duckies_bot.features.deadlock.models import (
     ActiveMatch,
     ActivePlayer,
     HeroExperience,
+    HeroAnalysis,
+    HeroStats,
+    HeroRelationshipStats,
     HeroRecord,
     HeroSummary,
     ItemSummary,
@@ -37,6 +40,7 @@ from duckies_bot.features.deadlock.models import (
     PlayerRank,
     PatchSummary,
     RankAsset,
+    RankedInsightsAnalysis,
     ScoutedPlayer,
     StatueBuff,
     SteamProfile,
@@ -453,6 +457,55 @@ class DeadlockClientTests(unittest.IsolatedAsyncioTestCase):
                 "max_average_badge": "96",
             },
         )
+
+    async def test_fetches_global_hero_analytics_with_rank_filters(self) -> None:
+        session = FakeSession([FakeResponse([{
+            "hero_id": 7,
+            "bucket": 0,
+            "wins": 560,
+            "losses": 440,
+            "matches": 1000,
+            "matches_per_bucket": 12000,
+            "bucket_matches_since_first_day": 12000,
+            "total_kills": 9000,
+            "total_deaths": 7000,
+            "total_assists": 11000,
+            "total_player_damage": 2_000_000,
+        }])])
+        client = DeadlockClient(base_url="https://example.test", session=session)  # type: ignore[arg-type]
+
+        stats = await client.get_hero_stats(
+            minimum_timestamp=1_762_317_750,
+            minimum_badge=81,
+            maximum_badge=None,
+            match_mode="ranked",
+        )
+
+        self.assertEqual(stats[0].hero_id, 7)
+        self.assertAlmostEqual(stats[0].win_rate or 0, 0.56)
+        self.assertEqual(session.requests[0][1]["min_average_badge"], "81")
+        self.assertNotIn("max_average_badge", session.requests[0][1])
+
+    async def test_fetches_counter_and_synergy_analytics(self) -> None:
+        counter = {
+            "hero_id": 7, "enemy_hero_id": 8, "wins": 40, "matches_played": 100
+        }
+        synergy = {
+            "hero_id1": 7, "hero_id2": 9, "wins": 60, "matches_played": 100
+        }
+        session = FakeSession([FakeResponse([counter]), FakeResponse([synergy])])
+        client = DeadlockClient(base_url="https://example.test", session=session)  # type: ignore[arg-type]
+
+        counters = await client.get_hero_counter_stats(
+            minimum_timestamp=1_762_317_750, same_lane=True
+        )
+        synergies = await client.get_hero_synergy_stats(
+            minimum_timestamp=1_762_317_750
+        )
+
+        self.assertEqual(counters, (HeroRelationshipStats(7, 8, 40, 100),))
+        self.assertEqual(synergies, (HeroRelationshipStats(7, 9, 60, 100),))
+        self.assertEqual(session.requests[0][1]["same_lane_filter"], "true")
 
     async def test_fetches_and_searches_steam_profiles(self) -> None:
         document = [
@@ -1020,13 +1073,22 @@ class DeadlockItemAnalysisTests(unittest.IsolatedAsyncioTestCase):
             interpret=AsyncMock(
                 return_value=InterpretedItemQuestion(
                     game="deadlock",
-                    intent="compare_items",
-                    primary_item="Glass Cannon",
-                    comparison_item="Decay",
-                    character="Haze",
+                    intent="compare",
+                    subject_type="item",
+                    primary_subject="Glass Cannon",
+                    comparison_subject="Decay",
+                    character_context="Haze",
                     item_position=None,
                     minimum_rank="Oracle",
                     maximum_rank=None,
+                    rank_scope="exact",
+                    metrics=("win_rate",),
+                    match_mode="ranked",
+                    role="any",
+                    lane_scope="any",
+                    result_limit=5,
+                    sort_by="win_rate",
+                    sort_direction="high",
                     needs_clarification=False,
                     clarification=None,
                     confidence="high",
@@ -1053,6 +1115,141 @@ class DeadlockItemAnalysisTests(unittest.IsolatedAsyncioTestCase):
             "would glass cannon be a better pickup than decay for hze around oracle",
             game="deadlock",
         )
+
+    async def test_flexible_hero_questions_route_to_ranked_hero_analytics(self) -> None:
+        patch_summary = PatchSummary("Patch", 1_762_317_750, "https://example.test/patch")
+        heroes = (
+            HeroSummary(7, "Haze", "https://example.test/haze.png"),
+            HeroSummary(8, "Warden", None),
+        )
+        rows = (
+            HeroStats(7, 560, 440, 1000, 12_000, 9000, 7000, 11000, 2_000_000),
+            HeroStats(8, 500, 500, 1000, 12_000, 8000, 8000, 10000, 1_800_000),
+        )
+        interpretation = InterpretedItemQuestion(
+            game="deadlock",
+            intent="analyze",
+            subject_type="character",
+            primary_subject="Haze",
+            comparison_subject=None,
+            character_context=None,
+            item_position=None,
+            minimum_rank="Oracle",
+            maximum_rank=None,
+            rank_scope="and_above",
+            metrics=("win_rate", "pick_rate", "sample_size"),
+            match_mode="ranked",
+            role="any",
+            lane_scope="any",
+            result_limit=5,
+            sort_by="win_rate",
+            sort_direction="high",
+            needs_clarification=False,
+            clarification=None,
+            confidence="high",
+        )
+        interpreter = SimpleNamespace(interpret=AsyncMock(return_value=interpretation))
+        client = SimpleNamespace(
+            get_heroes=AsyncMock(return_value=heroes),
+            get_rank_assets=AsyncMock(return_value=self.ranks),
+            get_latest_gameplay_patch=AsyncMock(return_value=patch_summary),
+            get_hero_stats=AsyncMock(return_value=rows),
+        )
+        service = DeadlockService(client, question_interpreter=interpreter)  # type: ignore[arg-type]
+
+        realistic_questions = (
+            "is haze good oracle+",
+            "hze any gud in orcale plus",
+            "HAZE GOOD ORACLE AND ABOVE",
+            "yo hows haze doing oracle+ no punctuation",
+        )
+        for question in realistic_questions:
+            with self.subTest(question=question):
+                result = await service.answer_question(question)
+                self.assertIsInstance(result, HeroAnalysis)
+                self.assertEqual(result.hero.name, "Haze")
+                self.assertAlmostEqual(result.stats.win_rate or 0, 0.56)
+                self.assertEqual(result.rank_label, "Oracle+")
+
+        client.get_hero_stats.assert_awaited_with(
+            minimum_timestamp=patch_summary.published_at,
+            minimum_badge=81,
+            maximum_badge=None,
+            match_mode="ranked",
+        )
+
+    async def test_routes_meta_items_counters_and_synergies(self) -> None:
+        patch_summary = PatchSummary("Patch", 1_762_317_750, "https://example.test/patch")
+        heroes = (
+            HeroSummary(7, "Haze", None),
+            HeroSummary(8, "Warden", None),
+            HeroSummary(9, "Ivy", None),
+        )
+        hero_rows = (
+            HeroStats(7, 55, 45, 100, 1200),
+            HeroStats(8, 48, 52, 100, 1200),
+            HeroStats(9, 60, 40, 100, 1200),
+        )
+        item_rows = (
+            ItemStats(1, 60, 40, 100, 90, 1500.0, 0.0),
+            ItemStats(2, 45, 55, 100, 70, 1400.0, 0.0),
+        )
+        client = SimpleNamespace(
+            get_heroes=AsyncMock(return_value=heroes),
+            get_rank_assets=AsyncMock(return_value=self.ranks),
+            get_latest_gameplay_patch=AsyncMock(return_value=patch_summary),
+            get_hero_stats=AsyncMock(return_value=hero_rows),
+            get_items=AsyncMock(return_value=self.items),
+            get_item_stats=AsyncMock(return_value=item_rows),
+            get_hero_counter_stats=AsyncMock(return_value=(
+                HeroRelationshipStats(7, 8, 40, 100),
+                HeroRelationshipStats(7, 9, 55, 100),
+            )),
+            get_hero_synergy_stats=AsyncMock(return_value=(
+                HeroRelationshipStats(7, 8, 52, 100),
+                HeroRelationshipStats(7, 9, 61, 100),
+            )),
+        )
+        interpreter = SimpleNamespace(interpret=AsyncMock())
+        service = DeadlockService(client, question_interpreter=interpreter)  # type: ignore[arg-type]
+
+        def plan(intent: str, *, subject_type: str = "character"):
+            return InterpretedItemQuestion(
+                game="deadlock",
+                intent=intent,
+                subject_type=subject_type,
+                primary_subject="Haze" if intent in {"matchup", "synergy"} else None,
+                comparison_subject=None,
+                character_context="Haze" if intent == "recommend" else None,
+                item_position=None,
+                minimum_rank="Oracle",
+                maximum_rank=None,
+                rank_scope="exact",
+                metrics=("win_rate", "sample_size"),
+                match_mode="ranked",
+                role="any",
+                lane_scope="any",
+                result_limit=2,
+                sort_by="win_rate",
+                sort_direction="high",
+                needs_clarification=False,
+                clarification=None,
+                confidence="high",
+            )
+
+        cases = (
+            ("top 2 heros oracle", plan("rank"), "Hero meta", "Ivy"),
+            ("best items haze oracle", plan("recommend", subject_type="item"), "Item recommendations", "Glass Cannon"),
+            ("who counters hze oracle", plan("matchup"), "Counters and matchups", "Warden"),
+            ("best teamates haze oracle", plan("synergy"), "Hero synergies", "Ivy"),
+        )
+        for question, interpretation, category, first_name in cases:
+            interpreter.interpret.return_value = interpretation
+            with self.subTest(question=question):
+                result = await service.answer_question(question)
+                self.assertIsInstance(result, RankedInsightsAnalysis)
+                self.assertEqual(result.category, category)
+                self.assertEqual(result.entries[0].name, first_name)
 
     def test_wilson_interval_contains_observed_rate(self) -> None:
         low, high = wilson_interval(60, 100)
