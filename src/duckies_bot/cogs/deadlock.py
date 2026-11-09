@@ -14,6 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..features.accounts import SteamIDError, parse_steam_id
+from ..features.ask_conversations import AskConversationStore
 from ..features.deadlock import (
     DeadlockScreenshotReader,
     DeadlockService,
@@ -37,6 +38,7 @@ from ..features.deadlock.scoreboard import (
     render_live_scoreboard,
 )
 from ..features.deadlock.scout_graphic import render_scout_graphic
+from ..features.item_questions import QuestionClarificationError
 from ..providers.deadlock import (
     DEFAULT_LIVE_PLAYER_DATA_TIMEOUT_SECONDS,
     DeadlockAPIError,
@@ -124,10 +126,12 @@ class DeadlockCog(commands.Cog):
         self.companion_pairings = companion_pairings
         self.screenshot_reader = screenshot_reader
         self.scout_templates = scout_templates
+        self._ask_conversations = AskConversationStore()
         self._chat_relays: dict[tuple[int, int], _ChatRelay] = {}
         self._live_watches: dict[tuple[int, int], _LiveWatch] = {}
 
     def cog_unload(self) -> None:
+        self._ask_conversations.clear()
         for relay in self._chat_relays.values():
             relay.task.cancel()
         self._chat_relays.clear()
@@ -242,6 +246,15 @@ class DeadlockCog(commands.Cog):
         await interaction.response.defer(thinking=True)
         try:
             analysis = await self.service.answer_question(question)
+        except QuestionClarificationError as exc:
+            response = await interaction.followup.send(str(exc), wait=True)
+            self._ask_conversations.register(
+                response.id,
+                user_id=interaction.user.id,
+                channel_id=interaction.channel_id,
+                turns=(question,),
+            )
+            return
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             return
@@ -255,7 +268,57 @@ class DeadlockCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(embed=build_analysis_embed(analysis))
+        response = await interaction.followup.send(
+            embed=build_analysis_embed(analysis),
+            wait=True,
+        )
+        self._ask_conversations.register(
+            response.id,
+            user_id=interaction.user.id,
+            channel_id=interaction.channel_id,
+            turns=(question,),
+        )
+
+    @commands.Cog.listener("on_message")
+    async def continue_ask_conversation(self, message: discord.Message) -> None:
+        if message.author.bot or not message.content.strip() or message.reference is None:
+            return
+        referenced_id = message.reference.message_id
+        if referenced_id is None:
+            return
+        session = self._ask_conversations.claim(
+            referenced_id,
+            user_id=message.author.id,
+            channel_id=message.channel.id,
+        )
+        if session is None:
+            return
+        follow_up = message.content.strip()
+        query = session.follow_up_query(follow_up)
+        async with message.channel.typing():
+            try:
+                analysis = await self.service.answer_question(query)
+            except QuestionClarificationError as exc:
+                response = await message.reply(str(exc), mention_author=False)
+            except ValueError as exc:
+                await message.reply(str(exc), mention_author=False)
+                return
+            except DeadlockAPIError as exc:
+                await message.reply(exc.user_message, mention_author=False)
+                return
+            except Exception:
+                LOGGER.exception("Unexpected error continuing Deadlock analytics")
+                await message.reply(
+                    "Something unexpected went wrong while continuing that Deadlock question.",
+                    mention_author=False,
+                )
+                return
+            else:
+                response = await message.reply(
+                    embed=build_analysis_embed(analysis),
+                    mention_author=False,
+                )
+        self._ask_conversations.continue_from(response.id, session, follow_up)
 
     async def _retry_player_lookup(
         self,

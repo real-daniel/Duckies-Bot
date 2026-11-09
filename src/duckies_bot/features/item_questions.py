@@ -42,6 +42,10 @@ class QuestionInterpreterUnavailableError(RuntimeError):
     """Raised when the optional interpretation provider cannot be reached."""
 
 
+class QuestionClarificationError(ValueError):
+    """Raised when a user can continue an ask conversation with missing detail."""
+
+
 def validate_analytics_question(
     interpreted: InterpretedAnalyticsQuestion,
     *,
@@ -49,7 +53,7 @@ def validate_analytics_question(
 ) -> InterpretedAnalyticsQuestion:
     """Validate the model's query plan before it can influence API calls."""
     if interpreted.needs_clarification:
-        raise ValueError(
+        raise QuestionClarificationError(
             interpreted.clarification
             or "I could not confidently interpret that question. Please rephrase it."
         )

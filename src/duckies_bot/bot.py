@@ -37,7 +37,9 @@ LOGGER = logging.getLogger(__name__)
 
 class DuckiesBot(commands.Bot):
     def __init__(self, settings: Settings) -> None:
-        super().__init__(command_prefix=commands.when_mentioned, intents=discord.Intents.default())
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.settings = settings
         self.tarkov_client = TarkovClient(
             base_url=settings.tarkov_api_url,
