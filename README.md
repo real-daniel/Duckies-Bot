@@ -17,7 +17,8 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   match mode, and rank range. Riot Match-V5 supplies the bounded Ranked Solo/Duo sample;
   components and boots do not count as core-item slots. It also handles role-filtered meta
   rankings, counters/head-to-head matchups, teammate synergies, and observed item
-  recommendations. Rank defaults to Emerald.
+  recommendations. Rank defaults to Emerald. Reply directly to the bot's result to continue
+  the same question for up to four compact user turns within ten minutes.
 
 - `/steam link steam_id:<id>` associates your Discord user with a SteamID64,
   SteamID3, SteamID2, or numeric Steam profile URL.
@@ -34,6 +35,7 @@ It also supports reusable Steam account links and Deadlock live-match lookups:
   rank and match-mode filters. It also supports hero meta rankings, dedicated counter and
   synergy statistics, and hero-specific item recommendations. Deadlock item comparisons
   intentionally do not infer purchase order because its builds have many flexible item slots.
+  Reply directly to the bot's result to continue the same short-lived conversation.
 - `/deadlock scout match_id:<id-or-top-200> screenshot:<image>` is intended for the start of
   a match. Provide either the numeric ID or a full game screenshot; screenshot
   mode crops and reads only the bottom-right quadrant locally. It waits for the
@@ -197,6 +199,10 @@ powershell -ExecutionPolicy Bypass -File scripts/build_companion.ps1
 The distributable is written to `dist\DuckiesCompanion.exe`. It is a windowed,
 single-file build with the Duckies app icon; copy that one executable to another
 Windows PC and run it.
+
+Enable **Message Content Intent** for the bot in the Discord Developer Portal. Duckies uses
+it only to read direct replies to registered `/ask` response messages; sessions are owner-only,
+in-memory, expire after ten minutes, and retain at most four 140-character user turns.
 
 Optional settings:
 

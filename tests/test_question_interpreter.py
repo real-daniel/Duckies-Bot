@@ -80,6 +80,8 @@ class OpenAIQuestionInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["model"], "gpt-6-luna")
         self.assertEqual(call["reasoning"], {"effort": "low"})
         self.assertIs(call["store"], False)
+        self.assertEqual(call["max_output_tokens"], 600)
+        self.assertEqual(call["prompt_cache_key"], "duckies-ask-league-gpt-6-luna")
         sent_input = str(call["input"]).casefold()
         self.assertNotIn("user_id", sent_input)
         self.assertNotIn("author", sent_input)
@@ -202,6 +204,35 @@ class OpenAIQuestionInterpreterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.needs_clarification)
         self.assertIn("rerun `/deadlock ask`", result.clarification or "")
+
+    async def test_compact_follow_up_transcript_is_interpreted_as_latest_request(self) -> None:
+        responses = FakeResponses()
+        responses.payload.update({
+            "game": "deadlock",
+            "intent": "compare",
+            "subject_type": "character",
+            "primary_subject": "Infernus",
+            "comparison_subject": "Haze",
+            "character_context": None,
+            "minimum_rank": "Oracle",
+            "rank_scope": "exact",
+            "metrics": ["win_rate", "pick_rate", "sample_size"],
+        })
+        interpreter = OpenAIQuestionInterpreter(
+            "secret", client=FakeOpenAIClient(responses)  # type: ignore[arg-type]
+        )
+
+        result = await interpreter.interpret(
+            "Continue this /ask conversation.\n"
+            "User turn 1: is infernus OP in oracle\n"
+            "User turn 2: compare him to haze",
+            game="deadlock",
+        )
+
+        self.assertEqual(result.primary_subject, "Infernus")
+        self.assertEqual(result.comparison_subject, "Haze")
+        prompt = str(responses.calls[0]["input"])
+        self.assertIn("interpret the latest turn", prompt.casefold())
 
     async def test_common_analysis_categories_fit_the_query_plan(self) -> None:
         cases = (
