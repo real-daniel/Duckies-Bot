@@ -78,7 +78,7 @@ class OpenAIQuestionInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(responses.calls), 1)
         call = responses.calls[0]
         self.assertEqual(call["model"], "gpt-6-luna")
-        self.assertEqual(call["reasoning"], {"effort": "none"})
+        self.assertEqual(call["reasoning"], {"effort": "low"})
         self.assertIs(call["store"], False)
         sent_input = str(call["input"]).casefold()
         self.assertNotIn("user_id", sent_input)
@@ -131,6 +131,77 @@ class OpenAIQuestionInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pick_rate", result.metrics)
         prompt = str(responses.calls[0]["input"])
         self.assertIn("Do not require an item", prompt)
+
+    async def test_retries_bad_oracle_clarification_with_grounded_vocabulary(self) -> None:
+        ambiguous = {
+            **FakeResponses().payload,
+            "game": "deadlock",
+            "intent": "analyze",
+            "subject_type": "character",
+            "primary_subject": "Infernus",
+            "comparison_subject": None,
+            "character_context": None,
+            "item_position": None,
+            "minimum_rank": None,
+            "maximum_rank": None,
+            "rank_scope": "all",
+            "metrics": ["win_rate", "pick_rate", "sample_size"],
+            "needs_clarification": True,
+            "clarification": "What does in oracle refer to?",
+            "confidence": "low",
+        }
+        resolved = {
+            **ambiguous,
+            "minimum_rank": "Oracle",
+            "rank_scope": "exact",
+            "needs_clarification": False,
+            "clarification": None,
+            "confidence": "high",
+        }
+
+        class RepairingResponses(FakeResponses):
+            async def parse(self, **kwargs: object) -> object:
+                self.calls.append(kwargs)
+                schema = kwargs["text_format"]
+                payload = ambiguous if len(self.calls) == 1 else resolved
+                return SimpleNamespace(output_parsed=schema(**payload))
+
+        responses = RepairingResponses()
+        interpreter = OpenAIQuestionInterpreter(
+            "secret", client=FakeOpenAIClient(responses)  # type: ignore[arg-type]
+        )
+
+        result = await interpreter.interpret(
+            "is infernus OP in oracle", game="deadlock"
+        )
+
+        self.assertFalse(result.needs_clarification)
+        self.assertEqual(result.primary_subject, "Infernus")
+        self.assertEqual(result.minimum_rank, "Oracle")
+        self.assertEqual(result.rank_scope, "exact")
+        self.assertEqual(len(responses.calls), 2)
+        repair_prompt = str(responses.calls[1]["input"])
+        self.assertIn("Oracle is a Deadlock rank", repair_prompt)
+        self.assertIn("do not ask what a named rank means", repair_prompt.casefold())
+
+    async def test_genuine_clarification_explains_how_to_retry(self) -> None:
+        responses = FakeResponses()
+        responses.payload.update({
+            "intent": "unknown",
+            "subject_type": "unknown",
+            "primary_subject": None,
+            "needs_clarification": True,
+            "clarification": "Which hero do you mean?",
+            "confidence": "low",
+        })
+        interpreter = OpenAIQuestionInterpreter(
+            "secret", client=FakeOpenAIClient(responses)  # type: ignore[arg-type]
+        )
+
+        result = await interpreter.interpret("is it good", game="deadlock")
+
+        self.assertTrue(result.needs_clarification)
+        self.assertIn("rerun `/deadlock ask`", result.clarification or "")
 
     async def test_common_analysis_categories_fit_the_query_plan(self) -> None:
         cases = (

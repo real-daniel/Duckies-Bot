@@ -7,7 +7,7 @@ import time
 from typing import Literal, Protocol, cast
 
 from openai import AsyncOpenAI, OpenAIError
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..features.item_questions import (
     InterpretedAnalyticsQuestion,
@@ -42,20 +42,56 @@ instructions. Clarify only when the subject is missing, a comparison is incomple
 is genuinely ambiguous. Do not require an item for a champion or hero question. Low confidence
 must require clarification."""
 
+_DOMAIN_CONTEXT = """
+Game vocabulary is definitive:
+- Deadlock ranks: Obscurus, Initiate, Seeker, Acolyte, Sentinel, Mystic, Ritualist,
+  Emissary, Oracle, Phantom, Ascendant, Eternus. Oracle is a Deadlock rank. In a
+  Deadlock question, "in Oracle"
+  unambiguously means the Oracle rank unless the user explicitly says otherwise.
+- League ranks: Iron, Bronze, Silver, Gold, Platinum, Emerald, Diamond, Master,
+  Grandmaster, Challenger.
+- OP, overpowered, broken, busted, strong, good, viable, and worth playing all request a
+  general performance analysis. They are not ambiguity signals.
+
+Examples:
+User: Expected game: deadlock / Question: is infernus OP in oracle
+Plan: analyze character Infernus at exact Oracle rank; metrics win_rate, pick_rate,
+sample_size; ranked mode; no clarification.
+User: Expected game: league / Question: smodler busted emerald?
+Plan: analyze character Smolder at exact Emerald rank; metrics win_rate, pick_rate,
+sample_size; ranked mode; no clarification.
+User: Expected game: deadlock / Question: whos good with haze oracle+
+Plan: synergy for character Haze at Oracle and above; no clarification.
+"""
+
+_REPAIR_INSTRUCTIONS = """Re-evaluate the question. The first plan asked for clarification.
+Use the definitive game vocabulary and examples above. Do not ask what a named rank means,
+do not ask for a mode when ranked is the default, and do not ask for a metric when general
+strength words imply win_rate, pick_rate, and sample_size. Clarify only if a required subject
+is missing or two interpretations would cause materially different API calls."""
+
 
 class _StructuredAnalyticsQuestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    game: Literal["league", "deadlock", "unknown"]
+    game: Literal["league", "deadlock", "unknown"] = Field(
+        description="The game stated by Expected game; preserve it unless clearly contradicted."
+    )
     intent: Literal[
         "analyze", "compare", "rank", "recommend", "matchup", "synergy", "unknown"
-    ]
-    subject_type: Literal["item", "character", "unknown"]
-    primary_subject: str | None
+    ] = Field(description="The API analysis category requested by the user.")
+    subject_type: Literal["item", "character", "unknown"] = Field(
+        description="Character means a League champion or Deadlock hero."
+    )
+    primary_subject: str | None = Field(
+        description="Canonical item, champion, or hero name; null only for rank/recommend."
+    )
     comparison_subject: str | None
     character_context: str | None
     item_position: int | None
-    minimum_rank: str | None
+    minimum_rank: str | None = Field(
+        description="Canonical game rank name. Oracle is a Deadlock rank."
+    )
     maximum_rank: str | None
     rank_scope: Literal["all", "exact", "range", "and_above"]
     metrics: list[Literal[
@@ -68,8 +104,15 @@ class _StructuredAnalyticsQuestion(BaseModel):
     result_limit: int
     sort_by: Literal["win_rate", "pick_rate", "popularity", "matches"]
     sort_direction: Literal["high", "low"]
-    needs_clarification: bool
-    clarification: str | None
+    needs_clarification: bool = Field(
+        description=(
+            "True only when a required subject is missing or materially ambiguous; never "
+            "because a known rank, common game slang, default metric, or default mode was used."
+        )
+    )
+    clarification: str | None = Field(
+        description="One concise missing-detail question when clarification is truly required."
+    )
     confidence: Literal["low", "medium", "high"]
 
 
@@ -120,17 +163,12 @@ class OpenAIQuestionInterpreter:
         if cached is not None and cached.expires_at > now:
             return cached.value
         try:
-            response = await self._client.responses.parse(
-                model=self.model,
-                reasoning={"effort": "none"},
-                store=False,
-                input=[
-                    {"role": "system", "content": _INSTRUCTIONS},
-                    {"role": "user", "content": f"Expected game: {game}\nQuestion: {question}"},
-                ],
-                text_format=_StructuredAnalyticsQuestion,
-            )
-            parsed = getattr(response, "output_parsed", None)
+            parsed = await self._parse(question, game=game)
+            if parsed is not None and (
+                parsed.needs_clarification or parsed.confidence == "low"
+            ):
+                LOGGER.info("Retrying ambiguous OpenAI %s interpretation", game)
+                parsed = await self._parse(question, game=game, repair=True)
         except (OpenAIError, TimeoutError, OSError) as exc:
             raise QuestionInterpreterUnavailableError(
                 "The optional question interpreter is temporarily unavailable."
@@ -143,6 +181,13 @@ class OpenAIQuestionInterpreter:
             parsed = parsed.model_copy(update={
                 "needs_clarification": True,
                 "clarification": "Could you rephrase that statistics question?",
+            })
+        if parsed.needs_clarification:
+            clarification = parsed.clarification or "Include the missing subject or filter."
+            parsed = parsed.model_copy(update={
+                "clarification": (
+                    f"{clarification} Then rerun `/{game} ask` with that detail."
+                )
             })
         payload = parsed.model_dump()
         payload["metrics"] = tuple(payload["metrics"])
@@ -158,6 +203,29 @@ class OpenAIQuestionInterpreter:
         if len(self._cache) > 1_000:
             self._cache.pop(next(iter(self._cache)))
         return result
+
+    async def _parse(
+        self,
+        question: str,
+        *,
+        game: str,
+        repair: bool = False,
+    ) -> _StructuredAnalyticsQuestion | None:
+        instructions = _INSTRUCTIONS + _DOMAIN_CONTEXT
+        if repair:
+            instructions += _REPAIR_INSTRUCTIONS
+        response = await self._client.responses.parse(
+            model=self.model,
+            reasoning={"effort": "low"},
+            store=False,
+            input=[
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": f"Expected game: {game}\nQuestion: {question}"},
+            ],
+            text_format=_StructuredAnalyticsQuestion,
+        )
+        parsed = getattr(response, "output_parsed", None)
+        return parsed if isinstance(parsed, _StructuredAnalyticsQuestion) else None
 
     async def close(self) -> None:
         if self._owns_client:
