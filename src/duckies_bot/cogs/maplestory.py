@@ -12,7 +12,9 @@ from ..features.maplestory import STAT_COLORS, InvalidInventoryScreenshot, highl
 
 
 class MapleStoryCog(commands.Cog):
-    @app_commands.command(name="sockets", description="Box matching Quanah jewel sockets in an inventory PNG")
+    maple = app_commands.Group(name="maple", description="MapleStory tools")
+
+    @maple.command(name="sockets", description="Box matching Quanah jewel sockets in an inventory PNG")
     @app_commands.describe(
         stat="Main stat to match across three sockets",
         screenshot="Original PNG cropped around the expanded 16-by-8 inventory grid",
