@@ -7,6 +7,7 @@ from discord.ext import commands
 
 from .cogs.deadlock import DeadlockCog
 from .cogs.league import LeagueCog
+from .cogs.maplestory import MapleStoryCog
 from .cogs.steam import SteamCog
 from .cogs.tarkov import TarkovCog
 from .companion_api import CompanionAPIServer
@@ -116,6 +117,7 @@ class DuckiesBot(commands.Bot):
         )
         await self.add_cog(deadlock_cog)
         await self.add_cog(LeagueCog(self, self.league_service))
+        await self.add_cog(MapleStoryCog())
         self.companion_api = CompanionAPIServer(
             self.companion_pairings,
             deadlock_cog.start_companion_watch,
