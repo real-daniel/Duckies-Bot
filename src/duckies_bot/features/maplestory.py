@@ -33,7 +33,10 @@ _BORDER_INSETS = {
 
 # Colors of the marker bodies, including shading where the item timer overlaps.
 _MARKER_COLORS = {
-    "Blue": {(51, 68, 102), (51, 85, 119)},
+    "Blue": {
+        (51, 68, 102), (51, 85, 119), (34, 119, 238), (68, 170, 255),
+        (17, 85, 170), (34, 136, 255), (17, 51, 119),
+    },
     "Gray": {(51, 68, 85), (68, 85, 102)},
     "Green": {(34, 85, 85), (51, 85, 102)},
     "Purple": {(85, 34, 102), (102, 51, 119)},
@@ -104,6 +107,9 @@ def highlight_sockets(
 
 
 def _read_marker(pixels, x: int, y: int) -> str | None:
+    # The bright Prismatic marker keeps this gold edge beside the item timer.
+    if pixels[x + 2, y + 6] == (214, 151, 78) and pixels[x + 2, y + 7] == (228, 181, 73):
+        return "Prismatic"
     body = [pixels[x + dx, y + dy] for dx in (0, 1) for dy in (6, 7, 8)]
     matches = [
         color for color, shades in _MARKER_COLORS.items()

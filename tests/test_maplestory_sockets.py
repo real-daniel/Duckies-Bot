@@ -18,11 +18,12 @@ def inventory_png() -> bytes:
     green = (34, 85, 85)
     gray = (51, 68, 85)
     purple = (85, 34, 102)
-    prismatic = (85, 102, 119)
+    bright_prismatic = (238, 187, 238)
+    bright_blue = (34, 119, 238)
     unclear = (120, 120, 120)
     pieces = (
         (11, (blue, blue, blue)),
-        (57, (prismatic, blue, blue)),
+        (57, (bright_prismatic, bright_blue, bright_blue)),
         (103, (red, green, red)),
         (149, (blue, blue, unclear)),
         (197, (blue, blue)),
@@ -37,6 +38,9 @@ def inventory_png() -> bytes:
 
     # One pixel in the red third socket is shaded differently on the real sample.
     draw.point((103 + 33, 17), fill=(85, 51, 68))
+    # The bright Prismatic marker has a gold edge next to the timer.
+    draw.point((57 + 12, 15), fill=(214, 151, 78))
+    draw.point((57 + 12, 16), fill=(228, 181, 73))
     output = BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()

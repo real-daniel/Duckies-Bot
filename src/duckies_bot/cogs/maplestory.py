@@ -33,7 +33,7 @@ class MapleStoryCog(commands.Cog):
 
         await interaction.response.defer()
         try:
-            image_bytes = await screenshot.read(use_cached=True)
+            image_bytes = await screenshot.read(use_cached=False)
         except discord.HTTPException:
             await interaction.followup.send("I couldn't download the attachment. Try uploading it again.")
             return
