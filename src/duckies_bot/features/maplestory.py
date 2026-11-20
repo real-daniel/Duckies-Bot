@@ -19,6 +19,7 @@ _ROW_OFFSETS = tuple(range(0, 8 * 46, 46))
 _CELL_SIZE = 42
 _GRID_WIDTH = _COLUMN_OFFSETS[-1] + _CELL_SIZE
 _GRID_HEIGHT = _ROW_OFFSETS[-1] + _CELL_SIZE
+_SOCKET_STRIP_BACKGROUND = (133, 133, 133)
 
 # A socket overlay darkens the top border and insets its visible run by one pixel.
 _BORDER_INSETS = {
@@ -82,8 +83,10 @@ def highlight_sockets(
     for row, offset_y in enumerate(_ROW_OFFSETS, start=1):
         for column, offset_x in enumerate(_COLUMN_OFFSETS, start=1):
             x, y = origin_x + offset_x, origin_y + offset_y
-            # A diagonal in the item artwork can resemble one marker. Require
-            # the outlines at both unobstructed socket positions.
+            # Check the game's shaded strip independently of the outlines.
+            # Some weapon sprites contain both diagonal patterns by chance.
+            if not all(pixels[x + dx, y + 4] == _SOCKET_STRIP_BACKGROUND for dx in (28, 38)):
+                continue
             if not all(_has_marker_outline(pixels, x + dx, y) for dx in (21, 33)):
                 continue
             colors = tuple(_read_marker(pixels, x + dx, y) for dx in (10, 21, 33))
