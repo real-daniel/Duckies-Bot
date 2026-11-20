@@ -74,3 +74,9 @@ class MapleStorySocketsTest(TestCase):
     def test_invalid_attachment(self):
         with self.assertRaises(InvalidInventoryScreenshot):
             highlight_sockets(b"invalid PNG", "INT")
+
+    def test_all_items_ignores_color_filters_and_excludes_two_socket_gear(self):
+        _, matches = highlight_sockets(inventory_png(), None, allow_prismatic=False)
+        self.assertEqual([match.column for match in matches], [1, 2, 3, 4, 6])
+        self.assertEqual(matches[1].colors, ("Prismatic", "Blue", "Blue"))
+        self.assertEqual(matches[3].colors, ("Blue", "Blue", None))

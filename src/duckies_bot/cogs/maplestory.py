@@ -16,14 +16,14 @@ class MapleStoryCog(commands.Cog):
 
     @maple.command(name="sockets", description="Box matching Quanah jewel sockets in an inventory PNG")
     @app_commands.describe(
-        stat="Main stat to match across three sockets",
+        stat="Main stat to match, or All to show every three-socket item",
         screenshot="Original PNG cropped around the expanded 16-by-8 inventory grid",
-        allow_prismatic="Allow one Prismatic socket per item (default: yes)",
+        allow_prismatic="Allow one Prismatic socket per item when filtering by stat (default: yes)",
     )
     async def sockets(
         self,
         interaction: discord.Interaction,
-        stat: Literal["INT", "STR", "DEX", "LUK"],
+        stat: Literal["All", "INT", "STR", "DEX", "LUK"],
         screenshot: discord.Attachment,
         allow_prismatic: bool = True,
     ) -> None:
@@ -38,9 +38,10 @@ class MapleStoryCog(commands.Cog):
             await interaction.followup.send("I couldn't download the attachment. Try uploading it again.")
             return
 
+        selected_stat = None if stat == "All" else stat
         try:
             image, matches = await asyncio.to_thread(
-                highlight_sockets, image_bytes, stat, allow_prismatic=allow_prismatic
+                highlight_sockets, image_bytes, selected_stat, allow_prismatic=allow_prismatic
             )
         except InvalidInventoryScreenshot:
             await interaction.followup.send(
@@ -49,10 +50,13 @@ class MapleStoryCog(commands.Cog):
             )
             return
 
-        colors = ", ".join(STAT_COLORS[stat])
-        if allow_prismatic:
-            colors += ", plus up to one Prismatic per item"
-        summary = f"**{stat} · {len(matches)} three-socket candidates**\nAllowed colors: {colors}."
+        if selected_stat is None:
+            summary = f"**All · {len(matches)} three-socket items**"
+        else:
+            colors = ", ".join(STAT_COLORS[selected_stat])
+            if allow_prismatic:
+                colors += ", plus up to one Prismatic per item"
+            summary = f"**{stat} · {len(matches)} three-socket candidates**\nAllowed colors: {colors}."
         lines = []
         for match in matches:
             sockets = ", ".join(color or "Unclear" for color in match.colors)

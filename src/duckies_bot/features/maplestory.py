@@ -57,10 +57,10 @@ class SocketMatch:
 
 
 def highlight_sockets(
-    screenshot: bytes, stat: str, *, allow_prismatic: bool = True
+    screenshot: bytes, stat: str | None, *, allow_prismatic: bool = True
 ) -> tuple[BytesIO, list[SocketMatch]]:
-    allowed = set(STAT_COLORS[stat])
-    if allow_prismatic:
+    allowed = set(STAT_COLORS[stat]) if stat is not None else None
+    if allowed is not None and allow_prismatic:
         allowed.add("Prismatic")
 
     try:
@@ -89,8 +89,9 @@ def highlight_sockets(
             ):
                 continue
             colors = tuple(_read_marker(pixels, x + dx, y) for dx in (10, 21, 33))
-            if colors.count("Prismatic") <= 1 and all(
-                color is None or color in allowed for color in colors
+            if allowed is None or (
+                colors.count("Prismatic") <= 1
+                and all(color is None or color in allowed for color in colors)
             ):
                 matches.append(SocketMatch(row, column, colors))
 
