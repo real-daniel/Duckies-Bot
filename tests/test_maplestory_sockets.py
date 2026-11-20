@@ -32,9 +32,13 @@ def inventory_png() -> bytes:
     for x, colors in pieces:
         for dx, color in zip((10, 21, 33), colors):
             draw.rectangle((x + dx, 15, x + dx + 1, 17), fill=color)
-        if len(colors) == 3:
-            draw.point((x + 34, 13), fill="black")
-            draw.point((x + 35, 14), fill="black")
+        for dx in (21, 33)[:len(colors) - 1]:
+            draw.point((x + dx + 1, 13), fill="black")
+            draw.point((x + dx + 2, 14), fill="black")
+
+    # Weapon artwork can mimic the third outline without a middle socket.
+    draw.point((289 + 34, 13), fill="black")
+    draw.point((289 + 35, 14), fill="black")
 
     # One pixel in the red third socket is shaded differently on the real sample.
     draw.point((103 + 33, 17), fill=(85, 51, 68))

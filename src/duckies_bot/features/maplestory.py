@@ -82,11 +82,9 @@ def highlight_sockets(
     for row, offset_y in enumerate(_ROW_OFFSETS, start=1):
         for column, offset_x in enumerate(_COLUMN_OFFSETS, start=1):
             x, y = origin_x + offset_x, origin_y + offset_y
-            # The third outline establishes that this is a three-socket item,
-            # even when its fill color cannot be read.
-            if not all(
-                pixels[x + dx, y + dy] == (0, 0, 0) for dx, dy in ((34, 4), (35, 5))
-            ):
+            # A diagonal in the item artwork can resemble one marker. Require
+            # the outlines at both unobstructed socket positions.
+            if not all(_has_marker_outline(pixels, x + dx, y) for dx in (21, 33)):
                 continue
             colors = tuple(_read_marker(pixels, x + dx, y) for dx in (10, 21, 33))
             if allowed is None or (
@@ -105,6 +103,14 @@ def highlight_sockets(
     image.save(output, format="PNG")
     output.seek(0)
     return output, matches
+
+
+def _has_marker_outline(pixels, x: int, y: int) -> bool:
+    return (
+        pixels[x + 1, y + 4] == pixels[x + 2, y + 5] == (0, 0, 0)
+        or pixels[x + 1, y + 4] == (17, 17, 153)
+        and pixels[x + 2, y + 4] == (157, 127, 134)
+    )
 
 
 def _read_marker(pixels, x: int, y: int) -> str | None:
