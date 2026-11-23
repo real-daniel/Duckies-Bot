@@ -37,25 +37,29 @@ class MapleStoryCog(commands.Cog):
 
     @maple.command(name="sockets", description="Box matching Quanah jewel sockets in an inventory PNG")
     @app_commands.describe(
-        stat="Main stat to match, or All to show every three-socket item",
+        stat="Main stat to match, or All to skip the stat filter",
         screenshot="Original PNG cropped around the expanded 16-by-8 inventory grid",
-        allow_prismatic="Allow one Prismatic socket per item when filtering by stat (default: yes)",
+        allow_prismatic="For stat filters, true allows one and false excludes it. Force always requires one.",
     )
     async def sockets(
         self,
         interaction: discord.Interaction,
         stat: Literal["All", "INT", "STR", "DEX", "LUK"],
         screenshot: discord.Attachment,
-        allow_prismatic: bool = True,
+        allow_prismatic: Literal["true", "false", "force"] = "true",
     ) -> None:
         image_bytes = await self._read_screenshot(interaction, screenshot)
         if image_bytes is None:
             return
 
         selected_stat = None if stat == "All" else stat
+        prismatic_filter = "force" if allow_prismatic == "force" else allow_prismatic == "true"
         try:
             image, matches = await asyncio.to_thread(
-                highlight_sockets, image_bytes, selected_stat, allow_prismatic=allow_prismatic
+                highlight_sockets,
+                image_bytes,
+                selected_stat,
+                allow_prismatic=prismatic_filter,
             )
         except InvalidInventoryScreenshot:
             await interaction.followup.send(
@@ -68,9 +72,11 @@ class MapleStoryCog(commands.Cog):
             summary = f"**All · {len(matches)} three-socket items**"
         else:
             colors = ", ".join(STAT_COLORS[selected_stat])
-            if allow_prismatic:
+            if allow_prismatic == "true":
                 colors += ", plus up to one Prismatic per item"
             summary = f"**{stat} · {len(matches)} three-socket candidates**\nAllowed colors: {colors}."
+        if allow_prismatic == "force":
+            summary += "\nExactly one Prismatic socket required per item."
         lines = []
         for match in matches:
             sockets = ", ".join(color or "Unclear" for color in match.colors)
