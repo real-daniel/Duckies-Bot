@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from io import BytesIO
 from itertools import groupby
+from typing import Literal
 
 from PIL import Image, ImageDraw
 
@@ -58,7 +59,10 @@ class SocketMatch:
 
 
 def highlight_sockets(
-    screenshot: bytes, stat: str | None, *, allow_prismatic: bool = True
+    screenshot: bytes,
+    stat: str | None,
+    *,
+    allow_prismatic: bool | Literal["force"] = True,
 ) -> tuple[BytesIO, list[SocketMatch]]:
     allowed = set(STAT_COLORS[stat]) if stat is not None else None
     if allowed is not None and allow_prismatic:
@@ -90,8 +94,11 @@ def highlight_sockets(
             if not all(_has_marker_outline(pixels, x + dx, y) for dx in (21, 33)):
                 continue
             colors = tuple(_read_marker(pixels, x + dx, y) for dx in (10, 21, 33))
+            prismatic_count = colors.count("Prismatic")
+            if allow_prismatic == "force" and prismatic_count != 1:
+                continue
             if allowed is None or (
-                colors.count("Prismatic") <= 1
+                prismatic_count <= 1
                 and all(color is None or color in allowed for color in colors)
             ):
                 matches.append(SocketMatch(row, column, colors))

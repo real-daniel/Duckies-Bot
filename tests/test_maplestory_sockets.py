@@ -19,6 +19,7 @@ def inventory_png() -> bytes:
     gray = (51, 68, 85)
     purple = (85, 34, 102)
     bright_prismatic = (238, 187, 238)
+    prismatic = (85, 102, 119)
     bright_blue = (34, 119, 238)
     unclear = (120, 120, 120)
     pieces = (
@@ -28,6 +29,8 @@ def inventory_png() -> bytes:
         (149, (blue, blue, unclear)),
         (197, (blue, blue)),
         (243, (purple, gray, purple)),
+        (383, (blue, prismatic, green)),
+        (429, (prismatic, prismatic, blue)),
     )
     for x, colors in pieces:
         draw.line((x + 1, 13, x + 40, 13), fill=(133, 133, 133))
@@ -88,6 +91,14 @@ class MapleStorySocketsTest(TestCase):
 
     def test_all_items_ignores_color_filters_and_excludes_two_socket_gear(self):
         _, matches = highlight_sockets(inventory_png(), None, allow_prismatic=False)
-        self.assertEqual([match.column for match in matches], [1, 2, 3, 4, 6])
+        self.assertEqual([match.column for match in matches], [1, 2, 3, 4, 6, 9, 10])
         self.assertEqual(matches[1].colors, ("Prismatic", "Blue", "Blue"))
         self.assertEqual(matches[3].colors, ("Blue", "Blue", None))
+
+    def test_force_requires_one_prismatic_and_keeps_the_selected_stat_filter(self):
+        png = inventory_png()
+        _, intelligence = highlight_sockets(png, "INT", allow_prismatic="force")
+        self.assertEqual(intelligence, [SocketMatch(1, 2, ("Prismatic", "Blue", "Blue"))])
+
+        _, unfiltered = highlight_sockets(png, None, allow_prismatic="force")
+        self.assertEqual([match.column for match in unfiltered], [2, 9])
